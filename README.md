@@ -36,24 +36,30 @@ source ~/.bashrc
 
 ## 🚀 Environment Startup
 
-### Step 1: Install Tool Versions
+### Step 1: Restart Your Terminal
 
-Run the following command in the root directory of the project. `mise` will automatically install the Node.js and Rust versions specified in `mise.toml`:
+After adding `mise` to your shell configuration above, **restart your terminal** (or `source` your shell config) so that the `mise activate` hook takes effect.
+
+Once activated, **`mise` automatically switches to the correct tool versions whenever you `cd` into this project directory** — no manual steps needed.
+
+### Step 2: Install Tool Versions
+
+Navigate to the project root and run:
 
 ```bash
 mise install
 ```
 
-Verify the versions:
+`mise` will automatically install the Node.js and Rust versions specified in `mise.toml`. After installation, verify that the correct versions are active:
 
 ```bash
-mise exec -- node --version   # Expected: v24.14.0
-mise exec -- rustc --version  # Expected: rustc 1.94.0 (...)
+node --version   # Expected: v24.14.0
+rustc --version  # Expected: rustc 1.94.0 (...)
 ```
 
 ---
 
-### Step 2: Verify the Frontend Environment (Next.js)
+### Step 3: Verify the Frontend Environment (Next.js)
 
 ```bash
 cd frontend
@@ -67,7 +73,7 @@ Press `Ctrl+C` to stop the server when you are done.
 
 ---
 
-### Step 3: Verify the Backend Environment (Rust Workspace)
+### Step 4: Verify the Backend Environment (Rust Workspace)
 
 ```bash
 cd backend

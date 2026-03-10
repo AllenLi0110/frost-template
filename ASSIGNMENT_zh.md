@@ -149,7 +149,7 @@
 
 - **無需上雲部署**: 你只要提供一份說明清楚的 `README.md`，引導我們如何在本地端 (Local) 順利編譯與運行整個系統即可。
 - **Docker Compose**: **必須** 包含一份 `docker-compose.yml`。我們希望能透過簡單的 `docker compose up` 指令，就一鍵啟動包含 Frontend、Coordinator、Node A、Node B 與 PostgreSQL（單一 instance 即可）的完整生態。
-- 在 README 中，請明確標示預設的 RPC Endpoint 應設定為 `https://api.devnet.solana.com`。同時，也請說明如果審閱者要測試轉帳，可以在哪裡查閱衍生出的錢包地址，以便手動發送 Devnet SOL 作為測試資金。若你大展身手另外接了水龍頭 (Faucet) 索取測試幣服務，也請一併介紹！
+- 系統應將 RPC Endpoint 設定為可透過環境變數覆蓋（例如 `SOLANA_RPC_URL`），並以 `https://api.devnet.solana.com` 作為預設值，且需在 `docker-compose.yml` 或 `.env.example` 中明確標示。同時，請在 README 中說明審閱者可在哪裡查閱衍生出的錢包地址，以便手動發送 Devnet SOL 作為測試資金。若你額外接了水龍頭 (Faucet) 服務，也請一併介紹！
 
 ### 3. 自動化測試體驗
 

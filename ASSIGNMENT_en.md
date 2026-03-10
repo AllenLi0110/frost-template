@@ -149,7 +149,7 @@ To expedite our testing and review process, please provide a clear local launch 
 
 - **No Cloud Deployment Required**: Simply provide a thoroughly documented `README.md` guiding us on compiling and running the full system natively on our locals.
 - **Docker Compose**: You **must** supply a `docker-compose.yml` file. We hope to launch the complete ecosystem—inclusive of Frontend, Coordinator, Node A, Node B, and PostgreSQL (a single instance is fine)—through a single, straightforward `docker compose up` command.
-- In your README, please explicitly inform to set the default RPC Endpoint to `https://api.devnet.solana.com`. In addition, explain to the reviewer where they can view derived wallet addresses so they may manually send Devnet SOL as testing funds. If you've gone the extra mile to integrate a Faucet/Airdrop service, please introduce that as well!
+- The system must configure the RPC Endpoint to be overridable via environment variables (e.g., `SOLANA_RPC_URL`), with `https://api.devnet.solana.com` as the default value. This should be clearly indicated in the `docker-compose.yml` or `.env.example`. In your README, please also explain to the reviewer where they can view derived wallet addresses so they may manually send Devnet SOL as testing funds. If you've gone the extra mile to integrate a Faucet/Airdrop service, please introduce that as well!
 
 ### 3. Automated Testing Experience
 
