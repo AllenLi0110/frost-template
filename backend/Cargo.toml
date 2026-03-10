@@ -1,0 +1,22 @@
+[workspace]
+members = ["coordinator", "tss-node"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[workspace.dependencies]
+tokio = { version = "1.47.1", features = ["full"] }
+axum = "0.8.8"
+snafu = "0.8.7"
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time"] }
+solana-client = "3.1.8"
+solana-sdk = "3.0.0"
+frost-ed25519 = "2.1.0"
+hd-wallet = "0.6.1"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
+uuid = { version = "1.18.0", features = ["v4", "serde"] }

@@ -1,0 +1,18 @@
+[package]
+name = "tss-node"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+snafu.workspace = true
+sqlx.workspace = true
+solana-sdk.workspace = true
+frost-ed25519.workspace = true
+hd-wallet.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
