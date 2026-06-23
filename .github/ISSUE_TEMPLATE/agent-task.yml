@@ -1,0 +1,59 @@
+name: Agent Task
+description: Start an automation-ready agent task.
+title: "[Agent] "
+labels:
+  - agent:task
+body:
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - Phase 0 - AI-native bootstrap
+        - Phase 1 - Project foundation
+        - Phase 2 - DKG state machine
+        - Phase 3 - FROST DKG crypto
+        - Phase 4 - Wallet derivation
+        - Phase 5 - Signing state machine
+        - Phase 6 - Broadcast and confirmation
+        - Phase 7 - Reviewer hardening
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Describe the task the agent should complete.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: List what is included.
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: List what the agent must not change.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: List required checks or use scripts/verify-phase.sh.
+      value: "./scripts/verify-phase.sh <phase-number>"
+    validations:
+      required: true
+  - type: checkboxes
+    id: approvals
+    attributes:
+      label: Human approval gates
+      options:
+        - label: I understand the agent must open a PR and must not merge its own work.
+          required: true
+        - label: I understand skipped verification requires human approval.
+          required: true
