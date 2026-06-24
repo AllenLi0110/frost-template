@@ -191,7 +191,8 @@ h3 {
 
 .control-panel,
 .state-panel,
-.wallet-panel {
+.wallet-panel,
+.signing-panel {
   min-width: 0;
   border: 1px solid var(--panel-border);
   border-radius: 8px;
@@ -315,6 +316,10 @@ h3 {
   margin-top: 18px;
 }
 
+.signing-panel {
+  margin-top: 18px;
+}
+
 .wallet-actions {
   display: flex;
   flex-wrap: wrap;
@@ -417,6 +422,156 @@ h3 {
   padding: 0 10px;
 }
 
+.transfer-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) minmax(120px, 170px) 160px;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 18px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fbfcfc;
+  padding: 14px;
+}
+
+.transfer-form label {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.transfer-form label span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.transfer-form input,
+.transfer-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--foreground);
+  font: inherit;
+  padding: 0 10px;
+}
+
+.signing-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.request-list {
+  display: grid;
+  gap: 10px;
+}
+
+.request-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--foreground);
+  padding: 12px;
+  text-align: left;
+}
+
+.request-row:hover {
+  border-color: var(--teal);
+}
+
+.request-row-selected {
+  border-color: var(--teal);
+  background: #f0f8f6;
+}
+
+.request-row strong,
+.request-row small,
+.request-amount {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.request-row small,
+.request-amount {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.request-amount {
+  grid-column: 1 / -1;
+}
+
+.signing-controls {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.selected-request-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fbfcfc;
+  padding: 14px;
+}
+
+.request-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.request-facts div {
+  min-width: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.request-facts dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.request-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+}
+
+.signing-round-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.signing-round-cell {
+  min-height: 150px;
+}
+
 @media (max-width: 900px) {
   .top-band {
     align-items: flex-start;
@@ -429,7 +584,8 @@ h3 {
   }
 
   .metric-strip,
-  .workflow-layout {
+  .workflow-layout,
+  .signing-layout {
     grid-template-columns: 1fr;
   }
 
@@ -444,6 +600,14 @@ h3 {
   .wallet-balance,
   .wallet-row-actions {
     grid-column: 1 / -1;
+  }
+
+  .transfer-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .transfer-form button {
+    width: 100%;
   }
 }
 
@@ -478,6 +642,12 @@ h3 {
 
   .wallet-actions {
     width: 100%;
+  }
+
+  .transfer-form,
+  .request-facts,
+  .signing-round-grid {
+    grid-template-columns: 1fr;
   }
 
   .wallet-row {

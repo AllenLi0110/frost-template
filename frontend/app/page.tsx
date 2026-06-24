@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type NodeId = "node-a" | "node-b";
 type Round = 1 | 2 | 3;
+type SigningRound = 1 | 2;
 
 type DkgStep = {
   node_id: NodeId;
@@ -58,12 +59,50 @@ type WalletBalanceResponse = {
   balance_error_message: string | null;
 };
 
+type SigningStep = {
+  node_id: NodeId;
+  round: SigningRound;
+  status: string;
+};
+
+type SigningRequest = {
+  request_id: string;
+  wallet_index: number;
+  sender_address_base58: string;
+  recipient_address_base58: string;
+  amount_lamports: number;
+  status: string;
+  message_hash_hex: string | null;
+  recent_blockhash: string | null;
+  transaction_signature: string | null;
+  explorer_url: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  node_steps: SigningStep[];
+};
+
+type SigningRequestListResponse = {
+  requests: SigningRequest[];
+};
+
+type TriggerSigningRoundResponse = {
+  request_id: string;
+  node_id: NodeId;
+  round: SigningRound;
+  status: string;
+  signing_status: string;
+  public_payload: Record<string, unknown> | null;
+};
+
 const nodes: Array<{ id: NodeId; label: string }> = [
   { id: "node-a", label: "Node A" },
   { id: "node-b", label: "Node B" },
 ];
 
 const rounds: Round[] = [1, 2, 3];
+const signingRounds: SigningRound[] = [1, 2];
+const defaultRecipientAddress = "11111111111111111111111111111111";
 
 export default function Home() {
   const [session, setSession] = useState<DkgSession | null>(null);
@@ -77,6 +116,18 @@ export default function Home() {
   const [selectedSenderIndex, setSelectedSenderIndex] = useState<number | null>(
     null,
   );
+  const [signingRequests, setSigningRequests] = useState<SigningRequest[]>([]);
+  const [isSigningLoading, setIsSigningLoading] = useState(true);
+  const [pendingSigningAction, setPendingSigningAction] = useState<
+    string | null
+  >(null);
+  const [selectedSigningRequestId, setSelectedSigningRequestId] = useState<
+    string | null
+  >(null);
+  const [transferForm, setTransferForm] = useState({
+    recipientAddress: defaultRecipientAddress,
+    amountLamports: "1000",
+  });
   const [lastAction, setLastAction] = useState<ActionEntry>({
     label: "Ready",
     status: "idle",
@@ -86,6 +137,7 @@ export default function Home() {
   useEffect(() => {
     void loadActiveSession();
     void loadWallets();
+    void loadSigningRequests();
   }, []);
 
   const completedSteps = useMemo(() => {
@@ -94,6 +146,16 @@ export default function Home() {
       0
     );
   }, [session]);
+
+  const selectedSigningRequest = useMemo(() => {
+    return (
+      signingRequests.find(
+        (request) => request.request_id === selectedSigningRequestId,
+      ) ??
+      signingRequests[0] ??
+      null
+    );
+  }, [selectedSigningRequestId, signingRequests]);
 
   async function loadActiveSession() {
     setIsLoading(true);
@@ -143,6 +205,37 @@ export default function Home() {
       });
     } finally {
       setIsWalletLoading(false);
+    }
+  }
+
+  async function loadSigningRequests() {
+    setIsSigningLoading(true);
+
+    try {
+      const response = await fetch("/api/coordinator/api/signing-requests", {
+        cache: "no-store",
+      });
+      const payload = await readJson<SigningRequestListResponse>(response);
+
+      setSigningRequests(payload.requests);
+      setSelectedSigningRequestId((currentId) => {
+        if (
+          currentId &&
+          payload.requests.some((request) => request.request_id === currentId)
+        ) {
+          return currentId;
+        }
+
+        return payload.requests[0]?.request_id ?? null;
+      });
+    } catch (error) {
+      setLastAction({
+        label: "Signing load failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setIsSigningLoading(false);
     }
   }
 
@@ -287,8 +380,95 @@ export default function Home() {
     setLastAction({
       label: "Sender selected",
       status: "ok",
-      message: `Wallet ${walletIndex} is selected for the next transfer phase.`,
+      message: `Wallet ${walletIndex} is selected for signing requests.`,
     });
+  }
+
+  async function createSigningRequest() {
+    if (selectedSenderIndex === null) {
+      setLastAction({
+        label: "Signing request",
+        status: "error",
+        message: "Select a sender wallet first.",
+      });
+      return;
+    }
+
+    const amountLamports = Number(transferForm.amountLamports);
+
+    if (!Number.isInteger(amountLamports) || amountLamports <= 0) {
+      setLastAction({
+        label: "Signing request",
+        status: "error",
+        message: "Amount must be a positive lamport integer.",
+      });
+      return;
+    }
+
+    setPendingSigningAction("create-signing-request");
+
+    try {
+      const response = await fetch("/api/coordinator/api/signing-requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          wallet_index: selectedSenderIndex,
+          recipient_address_base58: transferForm.recipientAddress.trim(),
+          amount_lamports: amountLamports,
+        }),
+      });
+      const signingRequest = await readJson<SigningRequest>(response);
+
+      await loadSigningRequests();
+      setSelectedSigningRequestId(signingRequest.request_id);
+      setLastAction({
+        label: "Signing request created",
+        status: "ok",
+        message: `Request ${shortId(signingRequest.request_id)} is ${signingRequest.status}.`,
+      });
+    } catch (error) {
+      setLastAction({
+        label: "Signing request failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingSigningAction(null);
+    }
+  }
+
+  async function triggerSigningRound(nodeId: NodeId, round: SigningRound) {
+    if (!selectedSigningRequest) {
+      return;
+    }
+
+    const actionKey = `signing-${selectedSigningRequest.request_id}-${nodeId}-${round}`;
+    setPendingSigningAction(actionKey);
+
+    try {
+      const response = await fetch(
+        `/api/coordinator/api/signing-requests/${selectedSigningRequest.request_id}/nodes/${nodeId}/rounds/${round}`,
+        { method: "POST" },
+      );
+      const result = await readJson<TriggerSigningRoundResponse>(response);
+
+      await loadSigningRequests();
+      setSelectedSigningRequestId(result.request_id);
+      setLastAction({
+        label: `${nodeLabel(nodeId)} Signing Round ${round}`,
+        status: "ok",
+        message: `${result.status}; request is now ${result.signing_status}.`,
+      });
+    } catch (error) {
+      await loadSigningRequests();
+      setLastAction({
+        label: `${nodeLabel(nodeId)} Signing Round ${round}`,
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingSigningAction(null);
+    }
   }
 
   return (
@@ -298,8 +478,8 @@ export default function Home() {
           <p className="eyebrow">FROST Template</p>
           <h1 id="page-title">DKG Control Surface</h1>
           <p className="intro">
-            Drive each 2-of-2 DKG round independently and watch coordinator
-            state advance without exposing private node material.
+            Drive DKG, derive wallets, and manually advance signing requests
+            without exposing private node material.
           </p>
         </div>
         <div className="session-actions">
@@ -486,6 +666,225 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      <section className="signing-panel" aria-labelledby="signing-title">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Phase 5</p>
+            <h2 id="signing-title">Signing Requests</h2>
+          </div>
+          <button
+            className="secondary-button"
+            disabled={isSigningLoading}
+            onClick={() => void loadSigningRequests()}
+            type="button"
+          >
+            {isSigningLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        <div className="transfer-form" aria-label="Create transfer intent">
+          <label>
+            <span>Sender</span>
+            <select
+              disabled={wallets.length === 0 || pendingSigningAction !== null}
+              onChange={(event) => {
+                if (event.target.value) {
+                  selectSender(Number(event.target.value));
+                }
+              }}
+              value={selectedSenderIndex ?? ""}
+            >
+              <option value="">Select wallet</option>
+              {wallets.map((wallet) => (
+                <option key={wallet.wallet_index} value={wallet.wallet_index}>
+                  Wallet {wallet.wallet_index} - {shortAddress(wallet.address_base58)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Recipient</span>
+            <input
+              onChange={(event) =>
+                setTransferForm((current) => ({
+                  ...current,
+                  recipientAddress: event.target.value,
+                }))
+              }
+              value={transferForm.recipientAddress}
+            />
+          </label>
+          <label>
+            <span>Lamports</span>
+            <input
+              inputMode="numeric"
+              min="1"
+              onChange={(event) =>
+                setTransferForm((current) => ({
+                  ...current,
+                  amountLamports: event.target.value,
+                }))
+              }
+              type="number"
+              value={transferForm.amountLamports}
+            />
+          </label>
+          <button
+            className="primary-button"
+            disabled={
+              selectedSenderIndex === null || pendingSigningAction !== null
+            }
+            onClick={() => void createSigningRequest()}
+            type="button"
+          >
+            {pendingSigningAction === "create-signing-request"
+              ? "Creating..."
+              : "Create Request"}
+          </button>
+        </div>
+
+        <div className="signing-layout">
+          <div className="request-list" role="list">
+            {signingRequests.length === 0 ? (
+              <div className="empty-wallet-state">
+                <strong>No signing requests</strong>
+                <p>Create a transfer intent after selecting a sender wallet.</p>
+              </div>
+            ) : (
+              signingRequests.map((request) => {
+                const isSelected =
+                  selectedSigningRequest?.request_id === request.request_id;
+
+                return (
+                  <button
+                    className={
+                      isSelected ? "request-row request-row-selected" : "request-row"
+                    }
+                    key={request.request_id}
+                    onClick={() => setSelectedSigningRequestId(request.request_id)}
+                    role="listitem"
+                    type="button"
+                  >
+                    <span>
+                      <strong>{shortId(request.request_id)}</strong>
+                      <small>Wallet {request.wallet_index}</small>
+                    </span>
+                    <span className={statusClass(request.status)}>
+                      {request.status}
+                    </span>
+                    <span className="request-amount">
+                      {formatLamports(request.amount_lamports)}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          <div className="signing-controls">
+            <div className="selected-request-summary">
+              <div>
+                <p className="eyebrow">Selected Request</p>
+                <h3>
+                  {selectedSigningRequest
+                    ? shortId(selectedSigningRequest.request_id)
+                    : "None"}
+                </h3>
+              </div>
+              <span
+                className={statusClass(
+                  selectedSigningRequest?.status ?? "NOT_CREATED",
+                )}
+              >
+                {selectedSigningRequest?.status ?? "NOT_CREATED"}
+              </span>
+            </div>
+
+            {selectedSigningRequest ? (
+              <>
+                <dl className="request-facts">
+                  <div>
+                    <dt>Sender</dt>
+                    <dd>{shortAddress(selectedSigningRequest.sender_address_base58)}</dd>
+                  </div>
+                  <div>
+                    <dt>Recipient</dt>
+                    <dd>
+                      {shortAddress(
+                        selectedSigningRequest.recipient_address_base58,
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Message</dt>
+                    <dd>
+                      {selectedSigningRequest.message_hash_hex
+                        ? shortId(selectedSigningRequest.message_hash_hex)
+                        : "Pending"}
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="signing-round-grid" role="list">
+                  {nodes.map((node) =>
+                    signingRounds.map((round) => {
+                      const step = findSigningStep(
+                        selectedSigningRequest,
+                        node.id,
+                        round,
+                      );
+                      const actionKey = `signing-${selectedSigningRequest.request_id}-${node.id}-${round}`;
+                      const isPending = pendingSigningAction === actionKey;
+                      const isRoundTwoReplay =
+                        round === 2 && step.status === "COMPLETED";
+
+                      return (
+                        <article
+                          className="round-cell signing-round-cell"
+                          key={actionKey}
+                          role="listitem"
+                        >
+                          <div>
+                            <p className="round-node">{node.label}</p>
+                            <h3>Signing Round {round}</h3>
+                          </div>
+                          <span className={statusClass(step.status)}>
+                            {step.status}
+                          </span>
+                          <button
+                            className="round-button"
+                            disabled={
+                              pendingSigningAction !== null || isRoundTwoReplay
+                            }
+                            onClick={() =>
+                              void triggerSigningRound(node.id, round)
+                            }
+                            type="button"
+                          >
+                            {isPending
+                              ? "Running..."
+                              : step.status === "COMPLETED"
+                                ? round === 1
+                                  ? "Replay"
+                                  : "Consumed"
+                                : "Run"}
+                          </button>
+                        </article>
+                      );
+                    }),
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="empty-wallet-state">
+                <strong>No request selected</strong>
+                <p>Create or select a request to trigger signing rounds.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
     </main>
   );
 }
@@ -506,6 +905,22 @@ function findStep(
 ): DkgStep {
   return (
     session?.node_steps.find(
+      (step) => step.node_id === nodeId && step.round === round,
+    ) ?? {
+      node_id: nodeId,
+      round,
+      status: "NOT_STARTED",
+    }
+  );
+}
+
+function findSigningStep(
+  request: SigningRequest,
+  nodeId: NodeId,
+  round: SigningRound,
+): SigningStep {
+  return (
+    request.node_steps.find(
       (step) => step.node_id === nodeId && step.round === round,
     ) ?? {
       node_id: nodeId,
@@ -557,6 +972,10 @@ function formatBalance(lamports: number | null): string {
   }
 
   return `${lamports} lamports (${(lamports / 1_000_000_000).toFixed(9)} SOL)`;
+}
+
+function formatLamports(lamports: number): string {
+  return `${lamports} lamports`;
 }
 
 function nodeLabel(nodeId: NodeId): string {

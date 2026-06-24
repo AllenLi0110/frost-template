@@ -36,6 +36,10 @@ const STATUS_COMPLETED: &str = "COMPLETED";
 const NODE_DKG_STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
 const NODE_DKG_STATUS_ROUND_2_COMPLETE: &str = "ROUND_2_COMPLETE";
 const NODE_DKG_STATUS_COMPLETED: &str = "COMPLETED";
+const NODE_SIGNING_STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
+const NODE_SIGNING_STATUS_ROUND_2_IN_PROGRESS: &str = "ROUND_2_IN_PROGRESS";
+const NODE_SIGNING_STATUS_ROUND_2_COMPLETE: &str = "ROUND_2_COMPLETE";
+const SIGNING_MESSAGE_FORMAT: &str = "frost-template-transfer-intent-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeConfig {
@@ -137,6 +141,29 @@ pub struct DkgRoundResponse {
     public_payload: Value,
 }
 
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
+pub struct SigningRoundRequest {
+    wallet_index: i32,
+    sender_address_base58: String,
+    recipient_address_base58: String,
+    amount_lamports: i64,
+    #[serde(default)]
+    message_payload: Value,
+    #[serde(default)]
+    message_hash_hex: String,
+    #[serde(default)]
+    signing_commitments: BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SigningRoundResponse {
+    request_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: &'static str,
+    public_payload: Value,
+}
+
 #[derive(Debug)]
 pub enum NodeDkgError {
     DatabaseUnavailable,
@@ -229,6 +256,14 @@ pub fn router_with_pool_and_crypto_service(
         .route("/internal/dkg/{session_id}/round1", post(dkg_round1))
         .route("/internal/dkg/{session_id}/round2", post(dkg_round2))
         .route("/internal/dkg/{session_id}/round3", post(dkg_round3))
+        .route(
+            "/internal/signing/{request_id}/round1",
+            post(signing_round1),
+        )
+        .route(
+            "/internal/signing/{request_id}/round2",
+            post(signing_round2),
+        )
         .with_state(AppState {
             config: Arc::new(config),
             crypto_service,
@@ -286,6 +321,22 @@ async fn dkg_round3(
     Json(request): Json<DkgRoundRequest>,
 ) -> Result<Json<DkgRoundResponse>, NodeDkgError> {
     Ok(Json(run_dkg_round(state, session_id, 3, request).await?))
+}
+
+async fn signing_round1(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+    Json(request): Json<SigningRoundRequest>,
+) -> Result<Json<SigningRoundResponse>, NodeDkgError> {
+    Ok(Json(run_frost_signing_round1(state, request_id, request).await?))
+}
+
+async fn signing_round2(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+    Json(request): Json<SigningRoundRequest>,
+) -> Result<Json<SigningRoundResponse>, NodeDkgError> {
+    Ok(Json(run_frost_signing_round2(state, request_id, request).await?))
 }
 
 async fn run_dkg_round(
@@ -476,6 +527,107 @@ async fn run_frost_dkg_round3(
     ))
 }
 
+async fn run_frost_signing_round1(
+    state: AppState,
+    request_id: Uuid,
+    request: SigningRoundRequest,
+) -> Result<SigningRoundResponse, NodeDkgError> {
+    let pool = state.db_pool.as_ref().ok_or(NodeDkgError::DatabaseUnavailable)?;
+    let schema = node_schema(&state.config.node_id)?;
+
+    if let Some(row) = fetch_node_signing_state(pool, schema, request_id).await? {
+        if let Some(commitment_payload) = row.commitment_payload {
+            return Ok(signing_round1_response(
+                &state.config,
+                request_id,
+                request.wallet_index,
+                commitment_payload.0,
+            ));
+        }
+    }
+
+    let key_package = load_completed_key_package(pool, schema, &state.config).await?;
+    let mut rng = OsRng;
+    let (signing_nonces, signing_commitments) =
+        frost::round1::commit(key_package.signing_share(), &mut rng);
+    let signing_nonces_ciphertext =
+        seal_bytes(&state.config, &signing_nonces.serialize().map_err(crypto_error)?)?;
+    let commitments_hex = hex::encode(signing_commitments.serialize().map_err(crypto_error)?);
+    let commitment_payload = signing_round1_payload(
+        &state.config,
+        request_id,
+        request.wallet_index,
+        commitments_hex,
+    );
+
+    upsert_signing_round1_state(
+        pool,
+        schema,
+        request_id,
+        &state.config.node_id,
+        request.wallet_index,
+        &signing_nonces_ciphertext,
+        &commitment_payload,
+    )
+    .await?;
+
+    Ok(signing_round1_response(
+        &state.config,
+        request_id,
+        request.wallet_index,
+        commitment_payload,
+    ))
+}
+
+async fn run_frost_signing_round2(
+    state: AppState,
+    request_id: Uuid,
+    request: SigningRoundRequest,
+) -> Result<SigningRoundResponse, NodeDkgError> {
+    let pool = state.db_pool.as_ref().ok_or(NodeDkgError::DatabaseUnavailable)?;
+    let schema = node_schema(&state.config.node_id)?;
+    let signing_state = fetch_node_signing_state(pool, schema, request_id)
+        .await?
+        .ok_or_else(|| {
+            NodeDkgError::MissingPrerequisite(
+                "signing round 2 requires local round 1 nonce state".to_string(),
+            )
+        })?;
+
+    if signing_state.round2_consumed_at.is_some() || signing_state.signature_share_hex.is_some() {
+        return Err(NodeDkgError::MissingPrerequisite(
+            "signing round 2 nonce has already been consumed".to_string(),
+        ));
+    }
+
+    let signing_nonces_ciphertext = signing_state.signing_nonces_ciphertext.ok_or_else(|| {
+        NodeDkgError::MissingPrerequisite(
+            "signing round 2 requires encrypted local nonce state".to_string(),
+        )
+    })?;
+    let signing_nonces_bytes = open_bytes(&state.config, &signing_nonces_ciphertext)?;
+    let signing_nonces =
+        frost::round1::SigningNonces::deserialize(&signing_nonces_bytes).map_err(crypto_error)?;
+    let key_package = load_completed_key_package(pool, schema, &state.config).await?;
+    let message_bytes = signing_message_bytes(&request)?;
+    let commitments = decode_signing_commitments(&request.signing_commitments, &state.config.node_id)?;
+    claim_signing_nonce_for_round2(pool, schema, request_id, &request.message_hash_hex).await?;
+    let signing_package = frost::SigningPackage::new(commitments, &message_bytes);
+    let signature_share =
+        frost::round2::sign(&signing_package, &signing_nonces, &key_package).map_err(crypto_error)?;
+    let signature_share_hex = hex::encode(signature_share.serialize());
+
+    store_signing_round2_share(pool, schema, request_id, &signature_share_hex).await?;
+
+    Ok(signing_round2_response(
+        &state.config,
+        request_id,
+        request.wallet_index,
+        request.message_hash_hex,
+        signature_share_hex,
+    ))
+}
+
 fn round1_response(
     config: &NodeConfig,
     session_id: Uuid,
@@ -541,6 +693,69 @@ fn round3_response(
     }
 }
 
+fn signing_round1_response(
+    config: &NodeConfig,
+    request_id: Uuid,
+    wallet_index: i32,
+    public_payload: Value,
+) -> SigningRoundResponse {
+    SigningRoundResponse {
+        request_id,
+        node_id: config.node_id.clone(),
+        round: 1,
+        status: STATUS_COMPLETED,
+        public_payload: if public_payload.is_null() {
+            signing_round1_payload(config, request_id, wallet_index, String::new())
+        } else {
+            public_payload
+        },
+    }
+}
+
+fn signing_round1_payload(
+    config: &NodeConfig,
+    request_id: Uuid,
+    wallet_index: i32,
+    commitments_hex: String,
+) -> Value {
+    json!({
+        "kind": "frost-signing-round1",
+        "package_format": FROST_PACKAGE_FORMAT,
+        "request_id": request_id,
+        "node_id": config.node_id.clone(),
+        "round": 1,
+        "wallet_index": wallet_index,
+        "commitment_scope": "root-key-package-transfer-intent",
+        "commitments_hex": commitments_hex
+    })
+}
+
+fn signing_round2_response(
+    config: &NodeConfig,
+    request_id: Uuid,
+    wallet_index: i32,
+    message_hash_hex: String,
+    signature_share_hex: String,
+) -> SigningRoundResponse {
+    SigningRoundResponse {
+        request_id,
+        node_id: config.node_id.clone(),
+        round: 2,
+        status: STATUS_COMPLETED,
+        public_payload: json!({
+            "kind": "frost-signing-round2",
+            "package_format": FROST_PACKAGE_FORMAT,
+            "request_id": request_id,
+            "node_id": config.node_id.clone(),
+            "round": 2,
+            "wallet_index": wallet_index,
+            "signature_scope": "root-key-package-transfer-intent",
+            "message_hash_hex": message_hash_hex,
+            "signature_share_hex": signature_share_hex
+        }),
+    }
+}
+
 #[derive(Debug, FromRow)]
 struct NodeDkgStateRow {
     round1_secret_package_ciphertext: Option<String>,
@@ -549,6 +764,19 @@ struct NodeDkgStateRow {
     round2_public_packages: Option<SqlxJson<Value>>,
     public_key_package_hex: Option<String>,
     master_public_key_base58: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct NodeSigningStateRow {
+    commitment_payload: Option<SqlxJson<Value>>,
+    signing_nonces_ciphertext: Option<String>,
+    signature_share_hex: Option<String>,
+    round2_consumed_at: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct CompletedKeyPackageRow {
+    key_package_ciphertext: String,
 }
 
 async fn fetch_node_dkg_state(
@@ -575,6 +803,58 @@ async fn fetch_node_dkg_state(
         .fetch_optional(pool)
         .await
         .map_err(NodeDkgError::from)
+}
+
+async fn fetch_node_signing_state(
+    pool: &PgPool,
+    schema: &str,
+    request_id: Uuid,
+) -> Result<Option<NodeSigningStateRow>, NodeDkgError> {
+    let query = format!(
+        r#"
+        SELECT
+            commitment_payload,
+            signing_nonces_ciphertext,
+            signature_share_hex,
+            round2_consumed_at::text AS round2_consumed_at
+        FROM {schema}.node_signing_states
+        WHERE request_id = $1
+        "#
+    );
+
+    sqlx::query_as::<_, NodeSigningStateRow>(&query)
+        .bind(request_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(NodeDkgError::from)
+}
+
+async fn load_completed_key_package(
+    pool: &PgPool,
+    schema: &str,
+    config: &NodeConfig,
+) -> Result<frost::keys::KeyPackage, NodeDkgError> {
+    let query = format!(
+        r#"
+        SELECT key_package_ciphertext
+        FROM {schema}.node_dkg_state
+        WHERE status = $1 AND key_package_ciphertext IS NOT NULL
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#
+    );
+    let row = sqlx::query_as::<_, CompletedKeyPackageRow>(&query)
+        .bind(NODE_DKG_STATUS_COMPLETED)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            NodeDkgError::MissingPrerequisite(
+                "signing requires a completed local FROST DKG key package".to_string(),
+            )
+        })?;
+    let key_package_bytes = open_bytes(config, &row.key_package_ciphertext)?;
+
+    frost::keys::KeyPackage::deserialize(&key_package_bytes).map_err(crypto_error)
 }
 
 async fn upsert_round1_state(
@@ -610,6 +890,42 @@ async fn upsert_round1_state(
     Ok(())
 }
 
+async fn upsert_signing_round1_state(
+    pool: &PgPool,
+    schema: &str,
+    request_id: Uuid,
+    node_id: &str,
+    wallet_index: i32,
+    signing_nonces_ciphertext: &str,
+    commitment_payload: &Value,
+) -> Result<(), NodeDkgError> {
+    let query = format!(
+        r#"
+        INSERT INTO {schema}.node_signing_states
+            (request_id, node_id, wallet_index, status, signing_nonces_ciphertext, commitment_payload)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (request_id) DO UPDATE
+        SET status = EXCLUDED.status,
+            signing_nonces_ciphertext = COALESCE({schema}.node_signing_states.signing_nonces_ciphertext, EXCLUDED.signing_nonces_ciphertext),
+            commitment_payload = COALESCE({schema}.node_signing_states.commitment_payload, EXCLUDED.commitment_payload),
+            updated_at = now()
+        WHERE {schema}.node_signing_states.round2_consumed_at IS NULL
+        "#
+    );
+
+    sqlx::query(&query)
+        .bind(request_id)
+        .bind(node_id)
+        .bind(wallet_index)
+        .bind(NODE_SIGNING_STATUS_ROUND_1_COMPLETE)
+        .bind(signing_nonces_ciphertext)
+        .bind(SqlxJson(commitment_payload.clone()))
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
 async fn update_round2_state(
     pool: &PgPool,
     schema: &str,
@@ -639,6 +955,75 @@ async fn update_round2_state(
     if result.rows_affected() == 0 {
         return Err(NodeDkgError::MissingPrerequisite(
             "round 2 requires local round 1 state to be completed".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn claim_signing_nonce_for_round2(
+    pool: &PgPool,
+    schema: &str,
+    request_id: Uuid,
+    message_hash_hex: &str,
+) -> Result<(), NodeDkgError> {
+    let query = format!(
+        r#"
+        UPDATE {schema}.node_signing_states
+        SET status = $2,
+            message_hash_hex = $3,
+            round2_consumed_at = now(),
+            updated_at = now()
+        WHERE request_id = $1
+          AND round2_consumed_at IS NULL
+          AND signature_share_hex IS NULL
+        "#
+    );
+
+    let result = sqlx::query(&query)
+        .bind(request_id)
+        .bind(NODE_SIGNING_STATUS_ROUND_2_IN_PROGRESS)
+        .bind(message_hash_hex)
+        .execute(pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(NodeDkgError::MissingPrerequisite(
+            "signing round 2 nonce has already been consumed".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn store_signing_round2_share(
+    pool: &PgPool,
+    schema: &str,
+    request_id: Uuid,
+    signature_share_hex: &str,
+) -> Result<(), NodeDkgError> {
+    let query = format!(
+        r#"
+        UPDATE {schema}.node_signing_states
+        SET status = $2,
+            signature_share_hex = $3,
+            updated_at = now()
+        WHERE request_id = $1
+          AND round2_consumed_at IS NOT NULL
+          AND signature_share_hex IS NULL
+        "#
+    );
+
+    let result = sqlx::query(&query)
+        .bind(request_id)
+        .bind(NODE_SIGNING_STATUS_ROUND_2_COMPLETE)
+        .bind(signature_share_hex)
+        .execute(pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(NodeDkgError::MissingPrerequisite(
+            "signing round 2 nonce has already been consumed".to_string(),
         ));
     }
 
@@ -743,6 +1128,67 @@ fn encode_round2_packages(
     }
 
     Ok(Value::Object(encoded))
+}
+
+fn decode_signing_commitments(
+    commitments: &BTreeMap<String, String>,
+    current_node_id: &str,
+) -> Result<BTreeMap<frost::Identifier, frost::round1::SigningCommitments>, NodeDkgError> {
+    if commitments.len() != 2 {
+        return Err(NodeDkgError::MissingPrerequisite(
+            "2-of-2 signing requires commitments from both nodes".to_string(),
+        ));
+    }
+
+    if !commitments.contains_key(current_node_id) {
+        return Err(NodeDkgError::MissingPrerequisite(
+            "signing commitments must include the current node".to_string(),
+        ));
+    }
+
+    commitments
+        .iter()
+        .map(|(node_id, commitments_hex)| {
+            node_schema(node_id)?;
+            let commitment_bytes = decode_hex_field("signing commitments", commitments_hex)?;
+            let signing_commitments =
+                frost::round1::SigningCommitments::deserialize(&commitment_bytes)
+                    .map_err(crypto_error)?;
+
+            Ok((node_identifier(node_id)?, signing_commitments))
+        })
+        .collect()
+}
+
+fn signing_message_bytes(request: &SigningRoundRequest) -> Result<Vec<u8>, NodeDkgError> {
+    if request.message_payload.get("format").and_then(Value::as_str)
+        != Some(SIGNING_MESSAGE_FORMAT)
+    {
+        return Err(NodeDkgError::InvalidRequest(
+            "signing message payload has an unsupported format".to_string(),
+        ));
+    }
+
+    let canonical_message = request
+        .message_payload
+        .get("canonical_message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NodeDkgError::InvalidRequest(
+                "signing message payload is missing canonical_message".to_string(),
+            )
+        })?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_message.as_bytes());
+    let computed_hash = hex::encode(hasher.finalize());
+
+    if computed_hash != request.message_hash_hex {
+        return Err(NodeDkgError::InvalidRequest(
+            "signing message hash does not match canonical_message".to_string(),
+        ));
+    }
+
+    Ok(canonical_message.as_bytes().to_vec())
 }
 
 fn decode_hex_field(field: &str, value: &str) -> Result<Vec<u8>, NodeDkgError> {
@@ -1049,6 +1495,78 @@ mod tests {
             assert!(
                 !encoded.contains(forbidden),
                 "public response must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn signing_message_hash_must_match_canonical_message() {
+        let canonical_message = "frost-template-transfer-intent-v1\nrequest_id=test";
+        let mut hasher = Sha256::new();
+        hasher.update(canonical_message.as_bytes());
+        let message_hash_hex = hex::encode(hasher.finalize());
+        let request = SigningRoundRequest {
+            wallet_index: 0,
+            sender_address_base58: bs58::encode([2_u8; 32]).into_string(),
+            recipient_address_base58: bs58::encode([3_u8; 32]).into_string(),
+            amount_lamports: 1,
+            message_payload: json!({
+                "format": SIGNING_MESSAGE_FORMAT,
+                "canonical_message": canonical_message
+            }),
+            message_hash_hex,
+            signing_commitments: BTreeMap::new(),
+        };
+
+        let message_bytes =
+            signing_message_bytes(&request).expect("matching hash should validate");
+
+        assert_eq!(message_bytes, canonical_message.as_bytes());
+
+        let tampered = SigningRoundRequest {
+            message_hash_hex: "00".repeat(32),
+            ..request
+        };
+        let error =
+            signing_message_bytes(&tampered).expect_err("tampered hash should be rejected");
+
+        assert!(matches!(error, NodeDkgError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn signing_public_payloads_do_not_expose_nonce_state() {
+        let config = test_config("node-a");
+        let request_id = Uuid::new_v4();
+        let encoded = serde_json::to_string(&vec![
+            signing_round1_response(
+                &config,
+                request_id,
+                0,
+                signing_round1_payload(&config, request_id, 0, "commitment".to_string()),
+            )
+            .public_payload,
+            signing_round2_response(
+                &config,
+                request_id,
+                0,
+                "message-hash".to_string(),
+                "signature-share".to_string(),
+            )
+            .public_payload,
+        ])
+        .expect("responses should serialize");
+
+        for forbidden in [
+            "root_share",
+            "private_share",
+            "nonce_secret",
+            "secret_key",
+            "key_package_ciphertext",
+            "signing_nonces_ciphertext",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "public signing response must not contain {forbidden}"
             );
         }
     }

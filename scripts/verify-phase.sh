@@ -860,6 +860,374 @@ main().catch((error) => {
 '
 }
 
+check_phase_five_stack() {
+  docker compose config >/dev/null
+  docker compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  npm --prefix frontend run build
+  docker compose up -d --force-recreate
+  docker compose ps
+
+  if docker compose port node-a 8081 >/tmp/frost-node-a-port.txt 2>&1; then
+    echo "node-a must not publish its internal API port to the host"
+    cat /tmp/frost-node-a-port.txt
+    exit 1
+  fi
+
+  if docker compose port node-b 8081 >/tmp/frost-node-b-port.txt 2>&1; then
+    echo "node-b must not publish its internal API port to the host"
+    cat /tmp/frost-node-b-port.txt
+    exit 1
+  fi
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, options = {}, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+
+      if (response.ok) {
+        return response;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  await fetchWithRetry("http://coordinator:8080/health");
+  await fetchWithRetry("http://node-a:8081/health");
+  await fetchWithRetry("http://node-b:8081/health");
+  const nodes = await fetchWithRetry("http://coordinator:8080/health/nodes").then((response) => response.json());
+  const unreachable = nodes.nodes.filter((node) => !node.reachable);
+
+  if (unreachable.length > 0) {
+    throw new Error(`unreachable nodes: ${JSON.stringify(unreachable)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.signing_requests CASCADE; TRUNCATE coordinator.wallets CASCADE; TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state; TRUNCATE node_a.node_signing_states; TRUNCATE node_b.node_signing_states;"
+
+  docker compose exec -T frontend node -e '
+const baseUrl = "http://coordinator:8080";
+const recipient = "11111111111111111111111111111111";
+const forbiddenFields = [
+  "root_share",
+  "private_share",
+  "nonce_secret",
+  "secret_key",
+  "key_package_ciphertext",
+  "signing_nonces_ciphertext"
+];
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  return { response, body };
+}
+
+async function expectOk(path, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function expectStatus(path, status, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (response.status !== status) {
+    throw new Error(`${path} expected HTTP ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function triggerDkg(sessionId, nodeId, round) {
+  return expectOk(`/api/dkg/sessions/${sessionId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+async function triggerSigning(requestId, nodeId, round) {
+  return expectOk(`/api/signing-requests/${requestId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+function assertNoForbiddenFields(value) {
+  const encoded = JSON.stringify(value);
+
+  for (const field of forbiddenFields) {
+    if (encoded.includes(field)) {
+      throw new Error(`forbidden private field ${field} appeared in coordinator response: ${encoded}`);
+    }
+  }
+}
+
+async function createSigningRequest(walletIndex, amountLamports) {
+  return expectOk("/api/signing-requests", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: walletIndex,
+      recipient_address_base58: recipient,
+      amount_lamports: amountLamports
+    })
+  });
+}
+
+async function main() {
+  await expectStatus("/api/signing-requests", 404, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: 99,
+      recipient_address_base58: recipient,
+      amount_lamports: 1
+    })
+  });
+
+  const session = await expectOk("/api/dkg/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      threshold: 2,
+      participants: ["node-a", "node-b"]
+    })
+  });
+
+  await triggerDkg(session.session_id, "node-a", 1);
+  await triggerDkg(session.session_id, "node-b", 1);
+  await triggerDkg(session.session_id, "node-a", 2);
+  await triggerDkg(session.session_id, "node-b", 2);
+  await triggerDkg(session.session_id, "node-a", 3);
+  await triggerDkg(session.session_id, "node-b", 3);
+
+  const wallet = await expectOk("/api/wallets", { method: "POST" });
+  const firstRequest = await createSigningRequest(wallet.wallet_index, 1000);
+  const secondRequest = await createSigningRequest(wallet.wallet_index, 2000);
+
+  if (firstRequest.request_id === secondRequest.request_id) {
+    throw new Error(`multiple signing requests reused an id: ${JSON.stringify([firstRequest, secondRequest])}`);
+  }
+
+  const list = await expectOk("/api/signing-requests");
+  const ids = new Set(list.requests.map((item) => item.request_id));
+
+  if (!ids.has(firstRequest.request_id) || !ids.has(secondRequest.request_id)) {
+    throw new Error(`request list did not include both requests: ${JSON.stringify(list)}`);
+  }
+
+  await expectStatus(`/api/signing-requests/${firstRequest.request_id}/nodes/node-a/rounds/2`, 409, {
+    method: "POST"
+  });
+
+  const nodeARound1 = await triggerSigning(firstRequest.request_id, "node-a", 1);
+
+  if (nodeARound1.signing_status !== "COMMITMENTS_IN_PROGRESS") {
+    throw new Error(`unexpected status after node-a round 1: ${JSON.stringify(nodeARound1)}`);
+  }
+
+  const nodeARound1Replay = await triggerSigning(firstRequest.request_id, "node-a", 1);
+
+  if (nodeARound1Replay.public_payload?.commitments_hex !== nodeARound1.public_payload?.commitments_hex) {
+    throw new Error(`round 1 replay did not return stored commitment: ${JSON.stringify([nodeARound1, nodeARound1Replay])}`);
+  }
+
+  const nodeBRound1 = await triggerSigning(firstRequest.request_id, "node-b", 1);
+
+  if (nodeBRound1.signing_status !== "COMMITMENTS_READY") {
+    throw new Error(`unexpected status after node-b round 1: ${JSON.stringify(nodeBRound1)}`);
+  }
+
+  const nodeARound2 = await triggerSigning(firstRequest.request_id, "node-a", 2);
+
+  if (nodeARound2.signing_status !== "SHARES_IN_PROGRESS" || !nodeARound2.public_payload?.signature_share_hex) {
+    throw new Error(`node-a round 2 did not produce a signature share: ${JSON.stringify(nodeARound2)}`);
+  }
+
+  await expectStatus(`/api/signing-requests/${firstRequest.request_id}/nodes/node-a/rounds/2`, 409, {
+    method: "POST"
+  });
+
+  const nodeBRound2 = await triggerSigning(firstRequest.request_id, "node-b", 2);
+
+  if (nodeBRound2.signing_status !== "READY_TO_AGGREGATE" || !nodeBRound2.public_payload?.signature_share_hex) {
+    throw new Error(`signing request did not become READY_TO_AGGREGATE: ${JSON.stringify(nodeBRound2)}`);
+  }
+
+  const completed = await expectOk(`/api/signing-requests/${firstRequest.request_id}`);
+
+  if (completed.status !== "READY_TO_AGGREGATE" || !completed.message_hash_hex) {
+    throw new Error(`completed signing request is not ready: ${JSON.stringify(completed)}`);
+  }
+
+  assertNoForbiddenFields(list);
+  assertNoForbiddenFields(nodeARound1);
+  assertNoForbiddenFields(nodeARound2);
+  assertNoForbiddenFields(completed);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  local node_a_nonce_count
+  node_a_nonce_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM node_a.node_signing_states WHERE signing_nonces_ciphertext LIKE 'v1:%' AND signature_share_hex IS NOT NULL AND round2_consumed_at IS NOT NULL;")"
+  if [[ "$node_a_nonce_count" != "1" ]]; then
+    echo "node-a did not persist encrypted nonce state and consume it once"
+    exit 1
+  fi
+
+  local node_b_nonce_count
+  node_b_nonce_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM node_b.node_signing_states WHERE signing_nonces_ciphertext LIKE 'v1:%' AND signature_share_hex IS NOT NULL AND round2_consumed_at IS NOT NULL;")"
+  if [[ "$node_b_nonce_count" != "1" ]]; then
+    echo "node-b did not persist encrypted nonce state and consume it once"
+    exit 1
+  fi
+
+  local coordinator_forbidden_count
+  coordinator_forbidden_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM coordinator.signing_node_steps WHERE public_payload::text ~ '(root_share|private_share|nonce_secret|secret_key|key_package_ciphertext|signing_nonces_ciphertext)';")"
+  if [[ "$coordinator_forbidden_count" != "0" ]]; then
+    echo "coordinator signing payloads contain forbidden private field names"
+    exit 1
+  fi
+
+  docker compose restart coordinator node-a node-b
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+      const body = text ? JSON.parse(text) : null;
+
+      if (response.ok) {
+        return body;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  const list = await fetchWithRetry("http://coordinator:8080/api/signing-requests");
+  const ready = list.requests.filter((request) => request.status === "READY_TO_AGGREGATE");
+
+  if (ready.length !== 1) {
+    throw new Error(`ready signing request did not survive restart: ${JSON.stringify(list)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+
+      if (response.ok) {
+        return { response, text };
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${text}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  let html = "";
+  let cssBodies = [];
+
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
+    html = (await fetchWithRetry("http://localhost:3000/", 1)).text;
+
+    if (!html.includes("FROST Template") || !html.includes("Signing Requests")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    const stylesheetPaths = Array.from(html.matchAll(/href="([^"]+\.css)"/g), (match) => match[1]);
+
+    if (stylesheetPaths.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    cssBodies = await Promise.all(
+      stylesheetPaths.map(async (path) => {
+        return (await fetchWithRetry(new URL(path, "http://localhost:3000/").toString(), 1)).text;
+      })
+    );
+
+    if (cssBodies.some((css) => /\.signing-round-grid\s*\{[^}]*display:\s*grid/.test(css))) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  if (!html.includes("FROST Template") || !html.includes("Signing Requests")) {
+    throw new Error("frontend did not render the signing request control surface");
+  }
+
+  throw new Error("frontend stylesheet did not include signing round grid styles");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -885,6 +1253,11 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_four_stack
+    ;;
+  5)
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_five_stack
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."
