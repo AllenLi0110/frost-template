@@ -87,3 +87,10 @@
 ## Follow-Up
 
 - Start Phase 3 by replacing `PlaceholderDkgCryptoService` behind the existing trait and preserving the public coordinator contract.
+
+## Post-Review Hardening
+
+- Removed host port publishing for `node-a` and `node-b`; TSS internal APIs now stay on the Docker Compose internal network.
+- Added atomic coordinator step claiming with a conditional `UPDATE ... RETURNING` so duplicate in-flight DKG round requests cannot both call node crypto.
+- Added unique-violation recovery for concurrent DKG session creation so competing create requests return the same active session.
+- Expanded Phase 2 verification to check internal node ports, concurrent create behavior, and duplicate round trigger behavior.

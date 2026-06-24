@@ -21,6 +21,7 @@ TSS Node:
 - Owns placeholder DKG crypto behavior in Phase 2.
 - Returns only public payloads.
 - Must not return root shares, nonce secrets, or private key material.
+- Must stay on the Docker internal network; node internal API ports are not published to the host.
 
 ## Public Coordinator API
 
@@ -95,6 +96,7 @@ Rules:
 - Round 2 requires both node Round 1 steps to be completed.
 - Round 3 requires both node Round 2 steps to be completed.
 - Re-triggering a completed step returns the stored public payload and does not call crypto again.
+- Re-triggering a step while another request is already running returns HTTP `409`.
 - When both Round 3 steps are completed, session status becomes `COMPLETED`.
 
 ## Internal TSS Node API
@@ -196,7 +198,7 @@ Expected status codes:
 |---:|---|
 | 400 | Invalid threshold, participant list, node id, or round. |
 | 404 | Active session or requested session does not exist. |
-| 409 | Round transition is out of order. |
+| 409 | Round transition is out of order, or the same node round is already running. |
 | 502 | TSS node call fails or returns an invalid response. |
 | 503 | DKG API is used without a database pool. |
 | 500 | Database failure. |

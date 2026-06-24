@@ -84,6 +84,18 @@ check_phase_two_stack() {
   docker compose up -d --force-recreate
   docker compose ps
 
+  if docker compose port node-a 8081 >/tmp/frost-node-a-port.txt 2>&1; then
+    echo "node-a must not publish its internal API port to the host"
+    cat /tmp/frost-node-a-port.txt
+    exit 1
+  fi
+
+  if docker compose port node-b 8081 >/tmp/frost-node-b-port.txt 2>&1; then
+    echo "node-b must not publish its internal API port to the host"
+    cat /tmp/frost-node-b-port.txt
+    exit 1
+  fi
+
   docker compose exec -T frontend node -e '
 async function fetchWithRetry(url, options = {}, attempts = 60) {
   let lastError;
@@ -165,14 +177,25 @@ async function trigger(sessionId, nodeId, round) {
 }
 
 async function main() {
-  const session = await expectOk("/api/dkg/sessions", {
+  const createRequest = {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       threshold: 2,
       participants: ["node-a", "node-b"]
     })
-  });
+  };
+
+  const [firstCreate, secondCreate] = await Promise.all([
+    expectOk("/api/dkg/sessions", createRequest),
+    expectOk("/api/dkg/sessions", createRequest)
+  ]);
+
+  if (firstCreate.session_id !== secondCreate.session_id) {
+    throw new Error(`concurrent creates returned different sessions: ${JSON.stringify([firstCreate, secondCreate])}`);
+  }
+
+  const session = firstCreate;
 
   if (session.status !== "NOT_STARTED" || session.node_steps.length !== 6) {
     throw new Error(`unexpected initial DKG session: ${JSON.stringify(session)}`);
@@ -182,7 +205,16 @@ async function main() {
     method: "POST"
   });
 
-  await trigger(session.session_id, "node-a", 1);
+  const duplicateRoundOne = await Promise.all([
+    request(`/api/dkg/sessions/${session.session_id}/nodes/node-a/rounds/1`, { method: "POST" }),
+    request(`/api/dkg/sessions/${session.session_id}/nodes/node-a/rounds/1`, { method: "POST" })
+  ]);
+  const duplicateStatuses = duplicateRoundOne.map((item) => item.response.status);
+
+  if (!duplicateStatuses.includes(200) || duplicateStatuses.some((status) => status !== 200 && status !== 409)) {
+    throw new Error(`duplicate round trigger returned unexpected statuses: ${JSON.stringify(duplicateStatuses)}`);
+  }
+
   await trigger(session.session_id, "node-b", 1);
 
   await expectStatus(`/api/dkg/sessions/${session.session_id}/nodes/node-a/rounds/3`, 409, {

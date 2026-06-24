@@ -22,6 +22,7 @@ const DKG_ROUNDS: [i32; 3] = [1, 2, 3];
 const STATUS_NOT_STARTED: &str = "NOT_STARTED";
 const STATUS_COMPLETED: &str = "COMPLETED";
 const STATUS_RUNNING: &str = "RUNNING";
+const STATUS_FAILED: &str = "FAILED";
 const STATUS_ROUND_1_IN_PROGRESS: &str = "ROUND_1_IN_PROGRESS";
 const STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
 const STATUS_ROUND_2_IN_PROGRESS: &str = "ROUND_2_IN_PROGRESS";
@@ -307,7 +308,7 @@ async fn create_dkg_session(
     let session_id = Uuid::new_v4();
     let mut transaction = pool.begin().await?;
 
-    sqlx::query(
+    let insert_result = sqlx::query(
         r#"
         INSERT INTO coordinator.dkg_sessions
             (id, threshold, participant_count, status, active)
@@ -319,7 +320,20 @@ async fn create_dkg_session(
     .bind(payload.participants.len() as i32)
     .bind(STATUS_NOT_STARTED)
     .execute(&mut *transaction)
-    .await?;
+    .await;
+
+    if let Err(error) = insert_result {
+        let unique_violation = is_unique_violation(&error);
+        let _ = transaction.rollback().await;
+
+        if unique_violation {
+            if let Some(session) = fetch_active_session(pool).await? {
+                return Ok(Json(fetch_session_response(pool, session).await?));
+            }
+        }
+
+        return Err(DkgError::Database(error));
+    }
 
     for node_id in NODE_IDS {
         for round in DKG_ROUNDS {
@@ -382,19 +396,29 @@ async fn trigger_dkg_round(
 
     validate_round_prerequisites(&steps, round)?;
 
-    sqlx::query(
-        r#"
-        UPDATE coordinator.dkg_node_steps
-        SET status = $1, updated_at = now()
-        WHERE session_id = $2 AND node_id = $3 AND round = $4
-        "#,
-    )
-    .bind(STATUS_RUNNING)
-    .bind(session_id)
-    .bind(&node_id)
-    .bind(round)
-    .execute(pool)
-    .await?;
+    if claim_dkg_step(pool, session_id, &node_id, round)
+        .await?
+        .is_none()
+    {
+        let current_session = fetch_session(pool, session_id)
+            .await?
+            .ok_or(DkgError::SessionNotFound)?;
+        let current_step = fetch_session_step(pool, session_id, &node_id, round)
+            .await?
+            .ok_or(DkgError::SessionNotFound)?;
+
+        if current_step.status == STATUS_COMPLETED {
+            return Ok(Json(completed_step_response(
+                &current_session,
+                &current_step,
+            )));
+        }
+
+        return Err(DkgError::TransitionBlocked(format!(
+            "{node_id} DKG round {round} is already {}",
+            current_step.status
+        )));
+    }
 
     let node_response = call_node_dkg_round(&state, session_id, &node_id, round).await;
     let node_response = match node_response {
@@ -507,7 +531,7 @@ async fn mark_step_failed(
         WHERE session_id = $3 AND node_id = $4 AND round = $5
         "#,
     )
-    .bind("FAILED")
+    .bind(STATUS_FAILED)
     .bind(error_message)
     .bind(session_id)
     .bind(node_id)
@@ -543,6 +567,34 @@ async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/0002_create_dkg_tables.sql"),
     )
     .await
+}
+
+async fn claim_dkg_step(
+    pool: &PgPool,
+    session_id: Uuid,
+    node_id: &str,
+    round: i32,
+) -> Result<Option<DkgStepRow>, DkgError> {
+    sqlx::query_as::<_, DkgStepRow>(
+        r#"
+        UPDATE coordinator.dkg_node_steps
+        SET status = $1, error_message = NULL, updated_at = now()
+        WHERE session_id = $2
+          AND node_id = $3
+          AND round = $4
+          AND status IN ($5, $6)
+        RETURNING node_id, round, status, public_payload
+        "#,
+    )
+    .bind(STATUS_RUNNING)
+    .bind(session_id)
+    .bind(node_id)
+    .bind(round)
+    .bind(STATUS_NOT_STARTED)
+    .bind(STATUS_FAILED)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
 }
 
 async fn run_sql_file(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
@@ -689,6 +741,27 @@ async fn fetch_session_steps(pool: &PgPool, session_id: Uuid) -> Result<Vec<DkgS
     .map_err(DkgError::from)
 }
 
+async fn fetch_session_step(
+    pool: &PgPool,
+    session_id: Uuid,
+    node_id: &str,
+    round: i32,
+) -> Result<Option<DkgStepRow>, DkgError> {
+    sqlx::query_as::<_, DkgStepRow>(
+        r#"
+        SELECT node_id, round, status, public_payload
+        FROM coordinator.dkg_node_steps
+        WHERE session_id = $1 AND node_id = $2 AND round = $3
+        "#,
+    )
+    .bind(session_id)
+    .bind(node_id)
+    .bind(round)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
 async fn fetch_session_response(
     pool: &PgPool,
     session: DkgSessionRow,
@@ -733,6 +806,13 @@ fn completed_step_response(session: &DkgSessionRow, step: &DkgStepRow) -> Trigge
 
 fn db_pool(state: &AppState) -> Result<&PgPool, DkgError> {
     state.db_pool.as_ref().ok_or(DkgError::DatabaseUnavailable)
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database_error| database_error.code())
+        .is_some_and(|code| code.as_ref() == "23505")
 }
 
 fn required<F>(variable: &'static str, get: &F) -> Result<String, ConfigError>
