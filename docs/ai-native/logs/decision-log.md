@@ -215,3 +215,29 @@ Consequences:
 
 Verification:
 - `./scripts/verify-phase.sh 0` verifies release metadata and CI/release workflow files.
+
+### 2026-06-25 - Sign Solana Transactions With Node-Local Child Shares
+
+Decision:
+- Phase 6 keeps derived wallets as the sender model and implements node-local child-share signing for each `wallet_index`.
+
+Context:
+- Phase 5 produced FROST signature shares over a canonical transfer-intent message using the root key package.
+- A real Solana transfer must be signed over the exact serialized transaction message by the public key that appears as the transaction signer.
+
+Options considered:
+- Broadcast from the root master public key and treat derived wallets as display-only.
+- Keep derived wallets as real senders and have each TSS node derive the child signing share in memory before Round 1 and Round 2.
+
+Reasoning:
+- The second option preserves the wallet derivation feature and matches the TSS boundary: Coordinator can derive public addresses and aggregate public signature shares, but private root and child shares never leave TSS nodes.
+
+Consequences:
+- Coordinator fetches a recent blockhash and stores the exact Solana message bytes before Round 2 signing.
+- TSS node signing payloads now expose public child verifying shares and child verifying keys.
+- Broadcast fails clearly if the blockhash expires or Solana RPC rejects the transaction.
+- CI uses `SOLANA_RPC_URL=mock://phase6` for deterministic broadcast/confirmation checks; funded Devnet verification remains a manual step.
+
+Verification:
+- Backend tests verify child-wallet signatures aggregate and verify against the derived signer.
+- `./scripts/verify-phase.sh 6` verifies DKG, wallet creation, signing, aggregation, mock broadcast, confirmation, and frontend broadcast controls.

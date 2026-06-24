@@ -162,16 +162,18 @@ Goal: Aggregate FROST signature shares, build Solana transfer transactions, broa
 
 Scope:
 - Fresh recent blockhash handling.
-- Signature share verification.
-- Aggregation.
+- Child-wallet share signing for the selected `wallet_index`.
+- Signature share aggregation and final signature verification.
 - Solana transfer transaction construction.
 - Broadcast and confirmation polling.
 - Explorer link.
+- Mock RPC integration verification that does not require CI funds.
 
 Definition of done:
 - A funded derived wallet can send Devnet SOL.
 - UI shows Broadcasted, Confirmed, or Failed.
 - Confirmed means Solana returned confirmed status.
+- Private root and child shares remain node-local.
 
 Suggested prompt:
 - `prompts/06-broadcast-confirmation.md`

@@ -621,13 +621,18 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coordinator"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "bincode",
  "bs58",
  "dotenvy",
+ "frost-core",
+ "frost-ed25519",
  "generic-ec",
  "hd-wallet",
+ "hex",
  "reqwest",
  "serde",
  "serde_json",
@@ -635,6 +640,7 @@ dependencies = [
  "snafu",
  "solana-client",
  "solana-sdk",
+ "solana-system-interface",
  "sqlx",
  "tokio",
  "tower",
@@ -6061,13 +6067,16 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tss-node"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm-siv",
  "axum",
+ "bincode",
  "bs58",
  "dotenvy",
+ "frost-core",
  "frost-ed25519",
+ "generic-ec",
  "hd-wallet",
  "hex",
  "serde",
@@ -6075,6 +6084,7 @@ dependencies = [
  "sha2",
  "snafu",
  "solana-sdk",
+ "solana-system-interface",
  "sqlx",
  "tokio",
  "tower",

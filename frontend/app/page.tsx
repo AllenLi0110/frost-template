@@ -103,7 +103,7 @@ const nodes: Array<{ id: NodeId; label: string }> = [
 
 const rounds: Round[] = [1, 2, 3];
 const signingRounds: SigningRound[] = [1, 2];
-const defaultRecipientAddress = "11111111111111111111111111111111";
+const defaultRecipientAddress = "";
 
 export default function Home() {
   const [session, setSession] = useState<DkgSession | null>(null);
@@ -406,6 +406,15 @@ export default function Home() {
       return;
     }
 
+    if (!transferForm.recipientAddress.trim()) {
+      setLastAction({
+        label: "Signing request",
+        status: "error",
+        message: "Recipient address is required.",
+      });
+      return;
+    }
+
     setPendingSigningAction("create-signing-request");
 
     try {
@@ -472,6 +481,76 @@ export default function Home() {
     }
   }
 
+  async function broadcastSigningRequest() {
+    if (!selectedSigningRequest) {
+      return;
+    }
+
+    const actionKey = `broadcast-${selectedSigningRequest.request_id}`;
+    setPendingSigningAction(actionKey);
+
+    try {
+      const response = await fetch(
+        `/api/coordinator/api/signing-requests/${selectedSigningRequest.request_id}/broadcast`,
+        { method: "POST" },
+      );
+      const request = await readJson<SigningRequest>(response);
+
+      await loadSigningRequests();
+      setSelectedSigningRequestId(request.request_id);
+      setLastAction({
+        label: "Broadcast submitted",
+        status: "ok",
+        message: request.transaction_signature
+          ? `Transaction ${shortId(request.transaction_signature)} is ${request.status}.`
+          : `Request ${shortId(request.request_id)} is ${request.status}.`,
+      });
+    } catch (error) {
+      await loadSigningRequests();
+      setLastAction({
+        label: "Broadcast failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingSigningAction(null);
+    }
+  }
+
+  async function refreshSigningConfirmation() {
+    if (!selectedSigningRequest) {
+      return;
+    }
+
+    const actionKey = `confirm-${selectedSigningRequest.request_id}`;
+    setPendingSigningAction(actionKey);
+
+    try {
+      const response = await fetch(
+        `/api/coordinator/api/signing-requests/${selectedSigningRequest.request_id}/confirm`,
+        { method: "POST" },
+      );
+      const request = await readJson<SigningRequest>(response);
+
+      await loadSigningRequests();
+      setSelectedSigningRequestId(request.request_id);
+      setLastAction({
+        label: "Confirmation refreshed",
+        status: request.status === "FAILED" ? "error" : "ok",
+        message: request.error_message ?? `Request is ${request.status}.`,
+      });
+    } catch (error) {
+      await loadSigningRequests();
+      setLastAction({
+        label: "Confirmation failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingSigningAction(null);
+    }
+  }
+
   return (
     <main className="page-shell">
       <section className="top-band" aria-labelledby="page-title">
@@ -479,8 +558,8 @@ export default function Home() {
           <p className="eyebrow">FROST Template</p>
           <h1 id="page-title">DKG Control Surface</h1>
           <p className="intro">
-            Drive DKG, derive wallets, and manually advance signing requests
-            without exposing private node material.
+            Drive DKG, derive wallets, collect threshold signatures, and broadcast
+            Devnet transfers without exposing private node material.
           </p>
         </div>
         <div className="session-actions">
@@ -571,8 +650,8 @@ export default function Home() {
           <div className="boundary-list">
             <h3>Protocol Boundary</h3>
             <p>Browser calls Coordinator only.</p>
-            <p>TSS nodes return public DKG payloads only.</p>
-            <p>Private shares stay node-local for Phase 3 crypto integration.</p>
+            <p>TSS nodes return public DKG and signing payloads only.</p>
+            <p>Private root and child shares stay node-local.</p>
           </div>
         </aside>
       </section>
@@ -671,7 +750,7 @@ export default function Home() {
       <section className="signing-panel" aria-labelledby="signing-title">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Phase 5</p>
+            <p className="eyebrow">Phase 5-6</p>
             <h2 id="signing-title">Signing Requests</h2>
           </div>
           <button
@@ -713,6 +792,7 @@ export default function Home() {
                   recipientAddress: event.target.value,
                 }))
               }
+              placeholder="Paste a Devnet wallet address"
               value={transferForm.recipientAddress}
             />
           </label>
@@ -825,6 +905,22 @@ export default function Home() {
                         : "Pending"}
                     </dd>
                   </div>
+                  <div>
+                    <dt>Blockhash</dt>
+                    <dd>
+                      {selectedSigningRequest.recent_blockhash
+                        ? shortId(selectedSigningRequest.recent_blockhash)
+                        : "Pending"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Transaction</dt>
+                    <dd>
+                      {selectedSigningRequest.transaction_signature
+                        ? shortId(selectedSigningRequest.transaction_signature)
+                        : "Not sent"}
+                    </dd>
+                  </div>
                 </dl>
 
                 <div className="signing-round-grid" role="list">
@@ -876,6 +972,53 @@ export default function Home() {
                     }),
                   )}
                 </div>
+
+                <div className="broadcast-actions">
+                  <button
+                    className="primary-button"
+                    disabled={
+                      selectedSigningRequest.status !== "READY_TO_AGGREGATE" ||
+                      pendingSigningAction !== null
+                    }
+                    onClick={() => void broadcastSigningRequest()}
+                    type="button"
+                  >
+                    {pendingSigningAction ===
+                    `broadcast-${selectedSigningRequest.request_id}`
+                      ? "Broadcasting..."
+                      : "Aggregate & Broadcast"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={
+                      selectedSigningRequest.status !== "BROADCASTED" ||
+                      pendingSigningAction !== null
+                    }
+                    onClick={() => void refreshSigningConfirmation()}
+                    type="button"
+                  >
+                    {pendingSigningAction ===
+                    `confirm-${selectedSigningRequest.request_id}`
+                      ? "Checking..."
+                      : "Refresh Confirmation"}
+                  </button>
+                  {selectedSigningRequest.explorer_url ? (
+                    <a
+                      className="explorer-link"
+                      href={selectedSigningRequest.explorer_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Open Explorer
+                    </a>
+                  ) : null}
+                </div>
+
+                {selectedSigningRequest.error_message ? (
+                  <p className="request-error">
+                    {selectedSigningRequest.error_message}
+                  </p>
+                ) : null}
               </>
             ) : (
               <div className="empty-wallet-state">
@@ -984,11 +1127,15 @@ function nodeLabel(nodeId: NodeId): string {
 }
 
 function statusClass(status: string): string {
-  if (status === "COMPLETED") {
+  if (status === "COMPLETED" || status === "CONFIRMED") {
     return "status-pill status-completed";
   }
 
-  if (status.includes("IN_PROGRESS") || status === "RUNNING") {
+  if (
+    status.includes("IN_PROGRESS") ||
+    status === "RUNNING" ||
+    status === "BROADCASTED"
+  ) {
     return "status-pill status-running";
   }
 

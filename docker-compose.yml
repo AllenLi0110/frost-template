@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frost}
       POSTGRES_DB: ${POSTGRES_DB:-frost}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres-data-18:/var/lib/postgresql
       - ./backend/migrations:/docker-entrypoint-initdb.d:ro
@@ -28,7 +28,7 @@ services:
       NODE_A_URL: http://node-a:8081
       NODE_B_URL: http://node-b:8081
     ports:
-      - "8080:8080"
+      - "${COORDINATOR_HOST_PORT:-8080}:8080"
     volumes:
       - ./backend:/workspace/backend
       - cargo-registry:/usr/local/cargo/registry
@@ -90,7 +90,7 @@ services:
       NEXT_PUBLIC_COORDINATOR_URL: ${NEXT_PUBLIC_COORDINATOR_URL:-http://localhost:8080}
       COORDINATOR_INTERNAL_URL: http://coordinator:8080
     ports:
-      - "3000:3000"
+      - "${FRONTEND_HOST_PORT:-3000}:3000"
     volumes:
       - ./frontend:/workspace/frontend
       - frontend-node-modules:/workspace/frontend/node_modules

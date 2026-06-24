@@ -181,8 +181,26 @@ The script verifies:
 
 ## Later Phases
 
-Later phases must add checks for:
+## Phase 6: Aggregation, Broadcast, Confirmation
 
-- Signature aggregation.
-- Solana Devnet broadcast and confirmation.
-- Frontend workflow coverage.
+Purpose:
+- Confirm FROST child-wallet signature shares aggregate into a Solana transfer transaction and advance through broadcast and confirmation states.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 6
+```
+
+The script verifies:
+
+- Backend workspace tests, including child-wallet signature verification.
+- Frontend lint and production build.
+- Docker Compose startup with `SOLANA_RPC_URL=mock://phase6`.
+- DKG, wallet creation, signing rounds, aggregate/broadcast, and confirmation.
+- Broadcast is rejected before `READY_TO_AGGREGATE`.
+- Broadcast stores transaction signature and Explorer URL.
+- Confirmation advances only after the mock RPC reports confirmed.
+- Frontend broadcast controls render.
+
+Manual Devnet verification is still required with a funded derived wallet because CI must not depend on a live wallet balance or external airdrop availability.

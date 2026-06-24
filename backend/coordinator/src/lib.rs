@@ -5,14 +5,24 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use frost_ed25519 as frost;
 use generic_ec::{curves::Ed25519, Point};
 use hd_wallet::{edwards, ExtendedPublicKey, NonHardenedIndex};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use solana_sdk::{
+    hash::Hash,
+    message::Message,
+    pubkey::Pubkey,
+    signature::Signature as SolanaSignature,
+    transaction::Transaction,
+};
+use solana_system_interface::instruction as system_instruction;
 use sqlx::{postgres::PgPoolOptions, types::Json as SqlxJson, Executor, FromRow, PgPool};
-use std::{collections::BTreeMap, error::Error, fmt, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, str::FromStr, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const DEFAULT_HOST: &str = "0.0.0.0";
@@ -40,8 +50,14 @@ const SIGNING_STATUS_COMMITMENTS_IN_PROGRESS: &str = "COMMITMENTS_IN_PROGRESS";
 const SIGNING_STATUS_COMMITMENTS_READY: &str = "COMMITMENTS_READY";
 const SIGNING_STATUS_SHARES_IN_PROGRESS: &str = "SHARES_IN_PROGRESS";
 const SIGNING_STATUS_READY_TO_AGGREGATE: &str = "READY_TO_AGGREGATE";
+const SIGNING_STATUS_BROADCASTED: &str = "BROADCASTED";
+const SIGNING_STATUS_CONFIRMED: &str = "CONFIRMED";
 const SIGNING_STATUS_FAILED: &str = STATUS_FAILED;
-const SIGNING_MESSAGE_FORMAT: &str = "frost-template-transfer-intent-v1";
+const SIGNING_MESSAGE_FORMAT: &str = "frost-template-solana-transfer-message-v1";
+const SIGNING_SCOPE: &str = "child-wallet-solana-transfer";
+const MOCK_SOLANA_RPC_PREFIX: &str = "mock://";
+const SOLANA_EXPLORER_DEVNET_URL: &str = "https://explorer.solana.com/tx";
+const SOLANA_SYSTEM_PROGRAM_ADDRESS: &str = "11111111111111111111111111111111";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppConfig {
@@ -351,6 +367,17 @@ struct DerivedWallet {
     address_base58: String,
 }
 
+struct PreparedSolanaTransaction {
+    transaction_bytes: Vec<u8>,
+    signature_base58: String,
+}
+
+struct TransactionConfirmation {
+    confirmed: bool,
+    failed: bool,
+    status_message: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct SolanaBalanceRpcResponse {
     result: Option<SolanaBalanceResult>,
@@ -365,6 +392,47 @@ struct SolanaBalanceResult {
 #[derive(Deserialize)]
 struct SolanaRpcError {
     message: String,
+}
+
+#[derive(Deserialize)]
+struct SolanaLatestBlockhashRpcResponse {
+    result: Option<SolanaLatestBlockhashResult>,
+    error: Option<SolanaRpcError>,
+}
+
+#[derive(Deserialize)]
+struct SolanaLatestBlockhashResult {
+    value: SolanaLatestBlockhashValue,
+}
+
+#[derive(Deserialize)]
+struct SolanaLatestBlockhashValue {
+    blockhash: String,
+}
+
+#[derive(Deserialize)]
+struct SolanaSendTransactionRpcResponse {
+    result: Option<String>,
+    error: Option<SolanaRpcError>,
+}
+
+#[derive(Deserialize)]
+struct SolanaSignatureStatusesRpcResponse {
+    result: Option<SolanaSignatureStatusesResult>,
+    error: Option<SolanaRpcError>,
+}
+
+#[derive(Deserialize)]
+struct SolanaSignatureStatusesResult {
+    value: Vec<Option<SolanaSignatureStatus>>,
+}
+
+#[derive(Deserialize)]
+struct SolanaSignatureStatus {
+    err: Option<Value>,
+    confirmations: Option<u64>,
+    #[serde(rename = "confirmationStatus")]
+    confirmation_status: Option<String>,
 }
 
 #[derive(Debug)]
@@ -382,6 +450,9 @@ enum DkgError {
     InvalidSigningRequest(String),
     InvalidSigningRound(i32),
     SigningTransitionBlocked(String),
+    SigningAggregationFailed(String),
+    SolanaRpcFailed(String),
+    SolanaRpcAmbiguous(String),
     WalletDerivationBlocked(String),
     WalletDerivationFailed(String),
     Database(sqlx::Error),
@@ -407,6 +478,9 @@ impl fmt::Display for DkgError {
             Self::InvalidSigningRequest(message) => write!(f, "{message}"),
             Self::InvalidSigningRound(round) => write!(f, "unsupported signing round {round}"),
             Self::SigningTransitionBlocked(message) => write!(f, "{message}"),
+            Self::SigningAggregationFailed(message) => write!(f, "{message}"),
+            Self::SolanaRpcFailed(message) => write!(f, "{message}"),
+            Self::SolanaRpcAmbiguous(message) => write!(f, "{message}"),
             Self::WalletDerivationBlocked(message) => write!(f, "{message}"),
             Self::WalletDerivationFailed(message) => write!(f, "{message}"),
             Self::Database(error) => write!(f, "database error: {error}"),
@@ -437,8 +511,11 @@ impl IntoResponse for DkgError {
             }
             Self::TransitionBlocked(_)
             | Self::WalletDerivationBlocked(_)
-            | Self::SigningTransitionBlocked(_) => StatusCode::CONFLICT,
-            Self::NodeCallFailed(_) => StatusCode::BAD_GATEWAY,
+            | Self::SigningTransitionBlocked(_)
+            | Self::SigningAggregationFailed(_) => StatusCode::CONFLICT,
+            Self::NodeCallFailed(_) | Self::SolanaRpcFailed(_) | Self::SolanaRpcAmbiguous(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::WalletDerivationFailed(_) | Self::Database(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -475,6 +552,14 @@ pub fn router_with_pool(config: AppConfig, db_pool: Option<PgPool>) -> Router {
             get(list_signing_requests).post(create_signing_request),
         )
         .route("/api/signing-requests/{request_id}", get(get_signing_request))
+        .route(
+            "/api/signing-requests/{request_id}/broadcast",
+            post(broadcast_signing_request),
+        )
+        .route(
+            "/api/signing-requests/{request_id}/confirm",
+            post(refresh_signing_confirmation),
+        )
         .route(
             "/api/wallets/{wallet_index}/balance",
             get(refresh_wallet_balance),
@@ -718,6 +803,146 @@ async fn get_signing_request(
     Ok(Json(fetch_signing_request_response(pool, request).await?))
 }
 
+async fn broadcast_signing_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+) -> Result<Json<SigningRequestResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    if request.status == SIGNING_STATUS_BROADCASTED || request.status == SIGNING_STATUS_CONFIRMED {
+        return Ok(Json(fetch_signing_request_response(pool, request).await?));
+    }
+
+    validate_signing_request_can_broadcast(&request)?;
+    let steps = fetch_signing_steps(pool, request_id).await?;
+    let prepared_transaction = prepare_signed_solana_transaction(&request, &steps)?;
+    let send_result = send_solana_transaction(
+        &state.http_client,
+        &state.config.solana_rpc_url,
+        &prepared_transaction.transaction_bytes,
+        &prepared_transaction.signature_base58,
+    )
+    .await;
+    let transaction_signature = match send_result {
+        Ok(transaction_signature) => transaction_signature,
+        Err(DkgError::SolanaRpcAmbiguous(message)) => {
+            let explorer_url = explorer_url(&prepared_transaction.signature_base58);
+            mark_signing_request_broadcasted(
+                pool,
+                request_id,
+                &prepared_transaction.signature_base58,
+                &explorer_url,
+                Some(&message),
+            )
+            .await?;
+
+            return Err(DkgError::SolanaRpcAmbiguous(message));
+        }
+        Err(error) => {
+            mark_signing_request_failed(pool, request_id, &error.to_string()).await?;
+            return Err(error);
+        }
+    };
+    let explorer_url = explorer_url(&transaction_signature);
+
+    mark_signing_request_broadcasted(pool, request_id, &transaction_signature, &explorer_url, None)
+        .await?;
+
+    let updated_request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    Ok(Json(fetch_signing_request_response(pool, updated_request).await?))
+}
+
+async fn refresh_signing_confirmation(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+) -> Result<Json<SigningRequestResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    if request.status == SIGNING_STATUS_CONFIRMED {
+        return Ok(Json(fetch_signing_request_response(pool, request).await?));
+    }
+
+    if request.status != SIGNING_STATUS_BROADCASTED {
+        return Err(DkgError::SigningTransitionBlocked(
+            "confirmation refresh requires a BROADCASTED signing request".to_string(),
+        ));
+    }
+
+    let transaction_signature = request.transaction_signature.as_deref().ok_or_else(|| {
+        DkgError::SigningTransitionBlocked(
+            "confirmation refresh requires a stored transaction signature".to_string(),
+        )
+    })?;
+    let confirmation = fetch_transaction_confirmation(
+        &state.http_client,
+        &state.config.solana_rpc_url,
+        transaction_signature,
+    )
+    .await?;
+
+    if confirmation.confirmed {
+        sqlx::query(
+            r#"
+            UPDATE coordinator.signing_requests
+            SET status = $1,
+                error_message = NULL,
+                updated_at = now()
+            WHERE id = $2
+            "#,
+        )
+        .bind(SIGNING_STATUS_CONFIRMED)
+        .bind(request_id)
+        .execute(pool)
+        .await?;
+    } else if confirmation.failed {
+        let message = confirmation
+            .status_message
+            .unwrap_or_else(|| "Solana transaction failed".to_string());
+        sqlx::query(
+            r#"
+            UPDATE coordinator.signing_requests
+            SET status = $1,
+                error_message = $2,
+                updated_at = now()
+            WHERE id = $3
+            "#,
+        )
+        .bind(SIGNING_STATUS_FAILED)
+        .bind(message)
+        .bind(request_id)
+        .execute(pool)
+        .await?;
+    } else if let Some(message) = confirmation.status_message {
+        sqlx::query(
+            r#"
+            UPDATE coordinator.signing_requests
+            SET error_message = $1,
+                updated_at = now()
+            WHERE id = $2
+            "#,
+        )
+        .bind(message)
+        .bind(request_id)
+        .execute(pool)
+        .await?;
+    }
+
+    let updated_request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    Ok(Json(fetch_signing_request_response(pool, updated_request).await?))
+}
+
 async fn trigger_signing_round(
     State(state): State<AppState>,
     Path((request_id, node_id, round)): Path<(Uuid, String, i32)>,
@@ -779,7 +1004,16 @@ async fn trigger_signing_round(
     }
 
     let node_request =
-        build_node_signing_round_request(pool, &request, &steps, &node_id, round).await?;
+        match build_node_signing_round_request(&state, pool, &request, &steps, &node_id, round)
+            .await
+        {
+            Ok(node_request) => node_request,
+            Err(error) => {
+                mark_signing_step_failed(pool, request_id, &node_id, round, &error.to_string())
+                    .await?;
+                return Err(error);
+            }
+        };
     let node_response =
         call_node_signing_round(&state, request_id, &node_id, round, &node_request).await;
     let node_response = match node_response {
@@ -1184,6 +1418,56 @@ async fn mark_signing_step_failed(
     Ok(())
 }
 
+async fn mark_signing_request_failed(
+    pool: &PgPool,
+    request_id: Uuid,
+    error_message: &str,
+) -> Result<(), DkgError> {
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1, error_message = $2, updated_at = now()
+        WHERE id = $3
+        "#,
+    )
+    .bind(SIGNING_STATUS_FAILED)
+    .bind(error_message)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn mark_signing_request_broadcasted(
+    pool: &PgPool,
+    request_id: Uuid,
+    transaction_signature: &str,
+    explorer_url: &str,
+    error_message: Option<&str>,
+) -> Result<(), DkgError> {
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1,
+            transaction_signature = $2,
+            explorer_url = $3,
+            error_message = $4,
+            updated_at = now()
+        WHERE id = $5
+        "#,
+    )
+    .bind(SIGNING_STATUS_BROADCASTED)
+    .bind(transaction_signature)
+    .bind(explorer_url)
+    .bind(error_message)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 async fn check_node(client: &Client, node_id: &'static str, base_url: &str) -> NodeHealth {
     let health_url = format!("{base_url}/health");
     let reachable = match client.get(&health_url).send().await {
@@ -1354,7 +1638,7 @@ async fn fetch_signing_requests(
                 sr.updated_at::text AS updated_at
             FROM coordinator.signing_requests sr
             JOIN coordinator.wallets w USING (wallet_index)
-            WHERE sr.status IN ($1, $2, $3, $4, $5)
+            WHERE sr.status IN ($1, $2, $3, $4, $5, $6)
             ORDER BY sr.created_at DESC
             "#,
         )
@@ -1363,6 +1647,7 @@ async fn fetch_signing_requests(
         .bind(SIGNING_STATUS_COMMITMENTS_READY)
         .bind(SIGNING_STATUS_SHARES_IN_PROGRESS)
         .bind(SIGNING_STATUS_READY_TO_AGGREGATE)
+        .bind(SIGNING_STATUS_BROADCASTED)
         .fetch_all(pool)
         .await
         .map_err(DkgError::from);
@@ -1750,6 +2035,233 @@ async fn fetch_balance_lamports(
     i64::try_from(balance).map_err(|_| "Solana RPC balance exceeded i64 range".to_string())
 }
 
+async fn fetch_latest_blockhash(client: &Client, solana_rpc_url: &str) -> Result<String, DkgError> {
+    if is_mock_solana_rpc(solana_rpc_url) {
+        return Ok(Hash::default().to_string());
+    }
+
+    let response = client
+        .post(solana_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{ "commitment": "confirmed" }]
+        }))
+        .send()
+        .await
+        .map_err(|_| solana_rpc_transport_failure("blockhash"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana blockhash request returned HTTP {status}"
+        )));
+    }
+
+    let payload = response
+        .json::<SolanaLatestBlockhashRpcResponse>()
+        .await
+        .map_err(|_| solana_rpc_decode_failure("blockhash"))?;
+
+    if let Some(error) = payload.error {
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana RPC error: {}",
+            public_error_message(&error.message)
+        )));
+    }
+
+    payload
+        .result
+        .map(|result| result.value.blockhash)
+        .ok_or_else(|| {
+            DkgError::SolanaRpcFailed(
+                "Solana blockhash response did not include a blockhash".to_string(),
+            )
+        })
+}
+
+async fn send_solana_transaction(
+    client: &Client,
+    solana_rpc_url: &str,
+    transaction_bytes: &[u8],
+    mock_signature_base58: &str,
+) -> Result<String, DkgError> {
+    if is_mock_solana_rpc(solana_rpc_url) {
+        return Ok(mock_signature_base58.to_string());
+    }
+
+    let encoded_transaction = BASE64_STANDARD.encode(transaction_bytes);
+    let response = client
+        .post(solana_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [
+                encoded_transaction,
+                {
+                    "encoding": "base64",
+                    "skipPreflight": false,
+                    "preflightCommitment": "confirmed"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|_| solana_rpc_ambiguous_send_failure())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana sendTransaction request returned HTTP {status}"
+        )));
+    }
+
+    let payload = response
+        .json::<SolanaSendTransactionRpcResponse>()
+        .await
+        .map_err(|_| solana_rpc_ambiguous_send_failure())?;
+
+    if let Some(error) = payload.error {
+        let public_message = public_error_message(&error.message);
+
+        if public_message.to_ascii_lowercase().contains("blockhash") {
+            return Err(DkgError::SolanaRpcFailed(format!(
+                "Solana RPC error: {public_message}; recent blockhash may be expired, create a new signing request"
+            )));
+        }
+
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana RPC error: {public_message}"
+        )));
+    }
+
+    payload.result.ok_or_else(|| {
+        DkgError::SolanaRpcFailed(
+            "Solana sendTransaction response did not include a signature".to_string(),
+        )
+    })
+}
+
+async fn fetch_transaction_confirmation(
+    client: &Client,
+    solana_rpc_url: &str,
+    transaction_signature: &str,
+) -> Result<TransactionConfirmation, DkgError> {
+    if is_mock_solana_rpc(solana_rpc_url) {
+        return Ok(TransactionConfirmation {
+            confirmed: true,
+            failed: false,
+            status_message: Some("mock Solana RPC returned confirmed".to_string()),
+        });
+    }
+
+    let response = client
+        .post(solana_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSignatureStatuses",
+            "params": [
+                [transaction_signature],
+                { "searchTransactionHistory": true }
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|_| solana_rpc_transport_failure("confirmation"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana confirmation request returned HTTP {status}"
+        )));
+    }
+
+    let payload = response
+        .json::<SolanaSignatureStatusesRpcResponse>()
+        .await
+        .map_err(|_| solana_rpc_decode_failure("confirmation"))?;
+
+    if let Some(error) = payload.error {
+        return Err(DkgError::SolanaRpcFailed(format!(
+            "Solana RPC error: {}",
+            public_error_message(&error.message)
+        )));
+    }
+
+    let status = payload
+        .result
+        .and_then(|result| result.value.into_iter().next())
+        .flatten();
+    let Some(status) = status else {
+        return Ok(TransactionConfirmation {
+            confirmed: false,
+            failed: false,
+            status_message: Some("Solana has not indexed this transaction yet".to_string()),
+        });
+    };
+
+    if let Some(error) = status.err {
+        return Ok(TransactionConfirmation {
+            confirmed: false,
+            failed: true,
+            status_message: Some(format!("Solana transaction failed: {error}")),
+        });
+    }
+
+    let confirmed = signature_status_is_confirmed(&status);
+    let confirmation_status = status.confirmation_status.unwrap_or_default();
+    let status_message = if confirmed {
+        Some(format!("Solana transaction is {confirmation_status}"))
+    } else {
+        Some(format!(
+            "Solana transaction is not confirmed yet; confirmations={}",
+            status
+                .confirmations
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ))
+    };
+
+    Ok(TransactionConfirmation {
+        confirmed,
+        failed: false,
+        status_message,
+    })
+}
+
+fn signature_status_is_confirmed(status: &SolanaSignatureStatus) -> bool {
+    matches!(
+        status.confirmation_status.as_deref(),
+        Some("confirmed") | Some("finalized")
+    )
+}
+
+fn is_mock_solana_rpc(solana_rpc_url: &str) -> bool {
+    solana_rpc_url.starts_with(MOCK_SOLANA_RPC_PREFIX)
+}
+
+fn explorer_url(transaction_signature: &str) -> String {
+    format!("{SOLANA_EXPLORER_DEVNET_URL}/{transaction_signature}?cluster=devnet")
+}
+
+fn solana_rpc_transport_failure(operation: &str) -> DkgError {
+    DkgError::SolanaRpcFailed(format!("Solana {operation} request failed"))
+}
+
+fn solana_rpc_decode_failure(operation: &str) -> DkgError {
+    DkgError::SolanaRpcFailed(format!("Solana {operation} response was invalid"))
+}
+
+fn solana_rpc_ambiguous_send_failure() -> DkgError {
+    DkgError::SolanaRpcAmbiguous(
+        "Solana sendTransaction outcome is unknown; refresh confirmation before creating another request"
+            .to_string(),
+    )
+}
+
 fn public_error_message(message: &str) -> String {
     const MAX_PUBLIC_ERROR_CHARS: usize = 160;
     let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1858,6 +2370,12 @@ fn validate_create_signing_request(
         ));
     }
 
+    if payload.recipient_address_base58 == SOLANA_SYSTEM_PROGRAM_ADDRESS {
+        return Err(DkgError::InvalidSigningRequest(
+            "recipient_address_base58 must be a wallet address, not the System Program".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1865,6 +2383,12 @@ fn validate_signing_request_can_transition(request: &SigningRequestRow) -> Resul
     if request.status == SIGNING_STATUS_FAILED {
         return Err(DkgError::SigningTransitionBlocked(
             "signing request is FAILED; create a new request".to_string(),
+        ));
+    }
+
+    if request.status == SIGNING_STATUS_BROADCASTED || request.status == SIGNING_STATUS_CONFIRMED {
+        return Err(DkgError::SigningTransitionBlocked(
+            "signing request has already been broadcast".to_string(),
         ));
     }
 
@@ -1944,6 +2468,7 @@ fn build_node_dkg_round_request(
 }
 
 async fn build_node_signing_round_request(
+    state: &AppState,
     pool: &PgPool,
     request: &SigningRequestRow,
     steps: &[SigningStepRow],
@@ -1951,7 +2476,7 @@ async fn build_node_signing_round_request(
     round: i32,
 ) -> Result<NodeSigningRoundRequest, DkgError> {
     let (message_payload, message_hash_hex) = if round == 2 {
-        ensure_signing_message(pool, request).await?
+        ensure_signing_message(state, pool, request).await?
     } else {
         (Value::Null, String::new())
     };
@@ -1973,6 +2498,7 @@ async fn build_node_signing_round_request(
 }
 
 async fn ensure_signing_message(
+    state: &AppState,
     pool: &PgPool,
     request: &SigningRequestRow,
 ) -> Result<(Value, String), DkgError> {
@@ -1982,18 +2508,25 @@ async fn ensure_signing_message(
         return Ok((payload.0.clone(), message_hash_hex.clone()));
     }
 
-    let canonical_message = canonical_transfer_message(request);
+    let recent_blockhash =
+        fetch_latest_blockhash(&state.http_client, &state.config.solana_rpc_url).await?;
+    let message = build_solana_transfer_message(request, &recent_blockhash)?;
+    let message_bytes = bincode::serialize(&message).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("failed to serialize Solana message: {error}"))
+    })?;
     let mut hasher = Sha256::new();
-    hasher.update(canonical_message.as_bytes());
+    hasher.update(&message_bytes);
     let message_hash_hex = hex_string(&hasher.finalize());
     let payload = json!({
         "format": SIGNING_MESSAGE_FORMAT,
+        "signature_scope": SIGNING_SCOPE,
         "request_id": request.id,
         "wallet_index": request.wallet_index,
         "sender_address_base58": request.sender_address_base58,
         "recipient_address_base58": request.recipient_address_base58,
         "amount_lamports": request.amount_lamports,
-        "canonical_message": canonical_message
+        "recent_blockhash": recent_blockhash,
+        "transaction_message_hex": hex_string(&message_bytes)
     });
 
     sqlx::query(
@@ -2001,12 +2534,14 @@ async fn ensure_signing_message(
         UPDATE coordinator.signing_requests
         SET message_payload = COALESCE(message_payload, $1),
             message_hash_hex = COALESCE(message_hash_hex, $2),
+            recent_blockhash = COALESCE(recent_blockhash, $3),
             updated_at = now()
-        WHERE id = $3
+        WHERE id = $4
         "#,
     )
     .bind(SqlxJson(payload.clone()))
     .bind(&message_hash_hex)
+    .bind(&recent_blockhash)
     .bind(request.id)
     .execute(pool)
     .await?;
@@ -2014,19 +2549,299 @@ async fn ensure_signing_message(
     Ok((payload, message_hash_hex))
 }
 
-fn canonical_transfer_message(request: &SigningRequestRow) -> String {
-    [
-        SIGNING_MESSAGE_FORMAT.to_string(),
-        format!("request_id={}", request.id),
-        format!("wallet_index={}", request.wallet_index),
-        format!("sender_address_base58={}", request.sender_address_base58),
-        format!(
-            "recipient_address_base58={}",
-            request.recipient_address_base58
-        ),
-        format!("amount_lamports={}", request.amount_lamports),
-    ]
-    .join("\n")
+fn validate_signing_request_can_broadcast(request: &SigningRequestRow) -> Result<(), DkgError> {
+    if request.status != SIGNING_STATUS_READY_TO_AGGREGATE {
+        return Err(DkgError::SigningTransitionBlocked(
+            "broadcast requires a READY_TO_AGGREGATE signing request".to_string(),
+        ));
+    }
+
+    if request.message_payload.is_none()
+        || request.message_hash_hex.is_none()
+        || request.recent_blockhash.is_none()
+    {
+        return Err(DkgError::SigningTransitionBlocked(
+            "broadcast requires a signed Solana transaction message".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn prepare_signed_solana_transaction(
+    request: &SigningRequestRow,
+    steps: &[SigningStepRow],
+) -> Result<PreparedSolanaTransaction, DkgError> {
+    let payload = request
+        .message_payload
+        .as_ref()
+        .ok_or_else(|| {
+            DkgError::SigningTransitionBlocked(
+                "broadcast requires a stored transaction message".to_string(),
+            )
+        })?
+        .0
+        .clone();
+    let message_hash_hex = request.message_hash_hex.as_deref().ok_or_else(|| {
+        DkgError::SigningTransitionBlocked("broadcast requires a message hash".to_string())
+    })?;
+    let message_bytes = transaction_message_bytes_from_payload(&payload, message_hash_hex)?;
+    let recent_blockhash = payload
+        .get("recent_blockhash")
+        .and_then(Value::as_str)
+        .or(request.recent_blockhash.as_deref())
+        .ok_or_else(|| {
+            DkgError::SigningTransitionBlocked(
+                "broadcast requires a recent blockhash".to_string(),
+            )
+        })?;
+    let message = build_solana_transfer_message(request, recent_blockhash)?;
+    let rebuilt_message_bytes = bincode::serialize(&message).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("failed to serialize Solana message: {error}"))
+    })?;
+
+    if rebuilt_message_bytes != message_bytes {
+        return Err(DkgError::SigningAggregationFailed(
+            "stored transaction message does not match signing request metadata".to_string(),
+        ));
+    }
+
+    let signing_package =
+        frost::SigningPackage::new(decode_frost_signing_commitments(steps)?, &message_bytes);
+    let signature_shares = decode_signature_shares(steps)?;
+    let child_verifying_key = decode_matching_child_verifying_key(steps)?;
+    let child_verifying_key_bytes = child_verifying_key.serialize().map_err(frost_error)?;
+    let signer_address_base58 = bs58::encode(&child_verifying_key_bytes).into_string();
+
+    if signer_address_base58 != request.sender_address_base58 {
+        return Err(DkgError::SigningAggregationFailed(
+            "child verifying key does not match signing request sender".to_string(),
+        ));
+    }
+
+    let public_key_package = frost::keys::PublicKeyPackage::new(
+        decode_child_verifying_shares(steps)?,
+        child_verifying_key,
+    );
+    let aggregate_signature =
+        frost::aggregate(&signing_package, &signature_shares, &public_key_package)
+            .map_err(frost_error)?;
+    let signature_bytes = aggregate_signature.serialize().map_err(frost_error)?;
+    let solana_signature = SolanaSignature::try_from(signature_bytes.clone()).map_err(|_| {
+        DkgError::SigningAggregationFailed("aggregated signature must be 64 bytes".to_string())
+    })?;
+    let mut transaction = Transaction::new_unsigned(message);
+
+    if transaction.signatures.len() != 1 {
+        return Err(DkgError::SigningAggregationFailed(
+            "Solana transfer message must require exactly one signer".to_string(),
+        ));
+    }
+
+    transaction.signatures[0] = solana_signature;
+    let transaction_bytes = bincode::serialize(&transaction).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!(
+            "failed to serialize signed Solana transaction: {error}"
+        ))
+    })?;
+
+    Ok(PreparedSolanaTransaction {
+        transaction_bytes,
+        signature_base58: bs58::encode(signature_bytes).into_string(),
+    })
+}
+
+fn build_solana_transfer_message(
+    request: &SigningRequestRow,
+    recent_blockhash: &str,
+) -> Result<Message, DkgError> {
+    let sender = Pubkey::from_str(&request.sender_address_base58).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("sender address is invalid: {error}"))
+    })?;
+    let recipient = Pubkey::from_str(&request.recipient_address_base58).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("recipient address is invalid: {error}"))
+    })?;
+    let blockhash = Hash::from_str(recent_blockhash).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("recent blockhash is invalid: {error}"))
+    })?;
+    let lamports = u64::try_from(request.amount_lamports).map_err(|_| {
+        DkgError::SigningAggregationFailed("amount_lamports must fit u64".to_string())
+    })?;
+    let instruction = system_instruction::transfer(&sender, &recipient, lamports);
+
+    Ok(Message::new_with_blockhash(
+        &[instruction],
+        Some(&sender),
+        &blockhash,
+    ))
+}
+
+fn transaction_message_bytes_from_payload(
+    payload: &Value,
+    message_hash_hex: &str,
+) -> Result<Vec<u8>, DkgError> {
+    if payload.get("format").and_then(Value::as_str) != Some(SIGNING_MESSAGE_FORMAT) {
+        return Err(DkgError::SigningAggregationFailed(
+            "stored signing message has an unsupported format".to_string(),
+        ));
+    }
+
+    if payload.get("signature_scope").and_then(Value::as_str) != Some(SIGNING_SCOPE) {
+        return Err(DkgError::SigningAggregationFailed(
+            "stored signing message has an unsupported signature scope".to_string(),
+        ));
+    }
+
+    let transaction_message_hex = payload
+        .get("transaction_message_hex")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            DkgError::SigningAggregationFailed(
+                "stored signing message is missing transaction_message_hex".to_string(),
+            )
+        })?;
+    let message_bytes = decode_hex_field("transaction_message_hex", transaction_message_hex)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&message_bytes);
+    let computed_hash = hex_string(&hasher.finalize());
+
+    if computed_hash != message_hash_hex {
+        return Err(DkgError::SigningAggregationFailed(
+            "stored transaction message hash does not match".to_string(),
+        ));
+    }
+
+    Ok(message_bytes)
+}
+
+fn decode_frost_signing_commitments(
+    steps: &[SigningStepRow],
+) -> Result<BTreeMap<frost::Identifier, frost::round1::SigningCommitments>, DkgError> {
+    let mut commitments = BTreeMap::new();
+
+    for step in steps.iter().filter(|step| step.round == 1) {
+        let commitments_hex = signing_required_payload_string(step, "commitments_hex")?;
+        let commitments_bytes = decode_hex_field("commitments_hex", &commitments_hex)?;
+        let signing_commitments = frost::round1::SigningCommitments::deserialize(
+            &commitments_bytes,
+        )
+        .map_err(frost_error)?;
+
+        commitments.insert(node_identifier(&step.node_id)?, signing_commitments);
+    }
+
+    if commitments.len() != NODE_IDS.len() {
+        return Err(DkgError::SigningTransitionBlocked(
+            "aggregate requires both signing commitments".to_string(),
+        ));
+    }
+
+    Ok(commitments)
+}
+
+fn decode_signature_shares(
+    steps: &[SigningStepRow],
+) -> Result<BTreeMap<frost::Identifier, frost::round2::SignatureShare>, DkgError> {
+    let mut signature_shares = BTreeMap::new();
+
+    for step in steps.iter().filter(|step| step.round == 2) {
+        let signature_share_hex = signing_required_payload_string(step, "signature_share_hex")?;
+        let signature_share_bytes = decode_hex_field("signature_share_hex", &signature_share_hex)?;
+        let signature_share =
+            frost::round2::SignatureShare::deserialize(&signature_share_bytes)
+                .map_err(frost_error)?;
+
+        signature_shares.insert(node_identifier(&step.node_id)?, signature_share);
+    }
+
+    if signature_shares.len() != NODE_IDS.len() {
+        return Err(DkgError::SigningTransitionBlocked(
+            "aggregate requires both signature shares".to_string(),
+        ));
+    }
+
+    Ok(signature_shares)
+}
+
+fn decode_child_verifying_shares(
+    steps: &[SigningStepRow],
+) -> Result<BTreeMap<frost::Identifier, frost::keys::VerifyingShare>, DkgError> {
+    let mut verifying_shares = BTreeMap::new();
+
+    for step in steps.iter().filter(|step| step.round == 2) {
+        let verifying_share_hex =
+            signing_required_payload_string(step, "child_verifying_share_hex")?;
+        let verifying_share_bytes =
+            decode_hex_field("child_verifying_share_hex", &verifying_share_hex)?;
+        let verifying_share =
+            frost::keys::VerifyingShare::deserialize(&verifying_share_bytes)
+                .map_err(frost_error)?;
+
+        verifying_shares.insert(node_identifier(&step.node_id)?, verifying_share);
+    }
+
+    if verifying_shares.len() != NODE_IDS.len() {
+        return Err(DkgError::SigningTransitionBlocked(
+            "aggregate requires both child verifying shares".to_string(),
+        ));
+    }
+
+    Ok(verifying_shares)
+}
+
+fn decode_matching_child_verifying_key(
+    steps: &[SigningStepRow],
+) -> Result<frost::VerifyingKey, DkgError> {
+    let mut verifying_key_hexes = Vec::new();
+
+    for step in steps.iter().filter(|step| step.round == 2) {
+        verifying_key_hexes.push(signing_required_payload_string(
+            step,
+            "child_verifying_key_hex",
+        )?);
+    }
+
+    if verifying_key_hexes.len() != NODE_IDS.len() {
+        return Err(DkgError::SigningTransitionBlocked(
+            "aggregate requires both child verifying keys".to_string(),
+        ));
+    }
+
+    let first = verifying_key_hexes.first().ok_or_else(|| {
+        DkgError::SigningTransitionBlocked(
+            "aggregate requires a child verifying key".to_string(),
+        )
+    })?;
+
+    if verifying_key_hexes.iter().any(|key| key != first) {
+        return Err(DkgError::SigningAggregationFailed(
+            "TSS nodes returned different child verifying keys".to_string(),
+        ));
+    }
+
+    let verifying_key_bytes = decode_hex_field("child_verifying_key_hex", first)?;
+
+    frost::VerifyingKey::deserialize(&verifying_key_bytes).map_err(frost_error)
+}
+
+fn decode_hex_field(field: &str, value: &str) -> Result<Vec<u8>, DkgError> {
+    hex::decode(value).map_err(|error| {
+        DkgError::SigningAggregationFailed(format!("{field} must be lowercase hex: {error}"))
+    })
+}
+
+fn node_identifier(node_id: &str) -> Result<frost::Identifier, DkgError> {
+    let identifier_index = match node_id {
+        "node-a" => 1_u16,
+        "node-b" => 2_u16,
+        _ => return Err(DkgError::InvalidNode(node_id.to_string())),
+    };
+
+    identifier_index.try_into().map_err(frost_error)
+}
+
+fn frost_error(error: impl fmt::Debug) -> DkgError {
+    DkgError::SigningAggregationFailed(format!("FROST signing aggregation failed: {error:?}"))
 }
 
 fn signing_commitments(steps: &[SigningStepRow]) -> Result<BTreeMap<String, String>, DkgError> {
@@ -2558,6 +3373,31 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_requires_both_signature_shares() {
+        let error = decode_signature_shares(&[])
+            .expect_err("aggregate should require both node signature shares");
+
+        assert!(matches!(error, DkgError::SigningTransitionBlocked(_)));
+    }
+
+    #[test]
+    fn confirmation_only_accepts_confirmed_or_finalized_status() {
+        let processed = SolanaSignatureStatus {
+            err: None,
+            confirmations: Some(1),
+            confirmation_status: Some("processed".to_string()),
+        };
+        let confirmed = SolanaSignatureStatus {
+            err: None,
+            confirmations: Some(1),
+            confirmation_status: Some("confirmed".to_string()),
+        };
+
+        assert!(!signature_status_is_confirmed(&processed));
+        assert!(signature_status_is_confirmed(&confirmed));
+    }
+
+    #[test]
     fn signing_commitments_require_both_node_payloads() {
         let steps = vec![
             signing_step_with_payload(
@@ -2599,6 +3439,15 @@ mod tests {
         };
         let error = validate_create_signing_request(&invalid_amount)
             .expect_err("zero amount should fail");
+
+        assert!(matches!(error, DkgError::InvalidSigningRequest(_)));
+
+        let system_program_recipient = CreateSigningRequestRequest {
+            recipient_address_base58: SOLANA_SYSTEM_PROGRAM_ADDRESS.to_string(),
+            ..request
+        };
+        let error = validate_create_signing_request(&system_program_recipient)
+            .expect_err("System Program recipient should fail");
 
         assert!(matches!(error, DkgError::InvalidSigningRequest(_)));
     }
@@ -2769,6 +3618,26 @@ mod tests {
         assert!(!message.contains('\n'));
         assert!(message.chars().count() <= 163);
         assert!(message.ends_with("..."));
+    }
+
+    #[test]
+    fn solana_transport_errors_do_not_echo_rpc_urls() {
+        let transport_error = solana_rpc_transport_failure("sendTransaction").to_string();
+        let decode_error = solana_rpc_decode_failure("confirmation").to_string();
+        let ambiguous_send_error = solana_rpc_ambiguous_send_failure().to_string();
+
+        for message in [transport_error, decode_error, ambiguous_send_error] {
+            assert!(!message.contains("https://"));
+            assert!(!message.contains("api-key"));
+            assert!(!message.contains("token"));
+        }
+    }
+
+    #[test]
+    fn send_transaction_transport_failure_is_ambiguous() {
+        let error = solana_rpc_ambiguous_send_failure();
+
+        assert!(matches!(error, DkgError::SolanaRpcAmbiguous(_)));
     }
 
     #[test]

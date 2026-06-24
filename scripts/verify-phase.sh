@@ -8,6 +8,19 @@ if [[ -z "$phase" ]]; then
   exit 2
 fi
 
+phase_six_compose() {
+  COMPOSE_PROJECT_NAME="${PHASE_SIX_COMPOSE_PROJECT:-frost-template-verify-phase6}" \
+  POSTGRES_HOST_PORT="${PHASE_SIX_POSTGRES_HOST_PORT:-15432}" \
+  COORDINATOR_HOST_PORT="${PHASE_SIX_COORDINATOR_HOST_PORT:-18080}" \
+  FRONTEND_HOST_PORT="${PHASE_SIX_FRONTEND_HOST_PORT:-13000}" \
+  SOLANA_RPC_URL=mock://phase6 \
+  docker compose "$@"
+}
+
+cleanup_phase_six_stack() {
+  phase_six_compose down -v --remove-orphans >/dev/null 2>&1 || true
+}
+
 check_no_sensitive_patterns() {
   local paths=()
 
@@ -935,7 +948,6 @@ main().catch((error) => {
 
   docker compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
-const recipient = "11111111111111111111111111111111";
 const forbiddenFields = [
   "root_share",
   "private_share",
@@ -995,29 +1007,19 @@ function assertNoForbiddenFields(value) {
   }
 }
 
-async function createSigningRequest(walletIndex, amountLamports) {
+async function createSigningRequest(walletIndex, recipientAddress, amountLamports) {
   return expectOk("/api/signing-requests", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       wallet_index: walletIndex,
-      recipient_address_base58: recipient,
+      recipient_address_base58: recipientAddress,
       amount_lamports: amountLamports
     })
   });
 }
 
 async function main() {
-  await expectStatus("/api/signing-requests", 404, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      wallet_index: 99,
-      recipient_address_base58: recipient,
-      amount_lamports: 1
-    })
-  });
-
   const session = await expectOk("/api/dkg/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1035,8 +1037,20 @@ async function main() {
   await triggerDkg(session.session_id, "node-b", 3);
 
   const wallet = await expectOk("/api/wallets", { method: "POST" });
-  const firstRequest = await createSigningRequest(wallet.wallet_index, 1000);
-  const secondRequest = await createSigningRequest(wallet.wallet_index, 2000);
+  const recipientWallet = await expectOk("/api/wallets", { method: "POST" });
+
+  await expectStatus("/api/signing-requests", 404, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: 99,
+      recipient_address_base58: recipientWallet.address_base58,
+      amount_lamports: 1
+    })
+  });
+
+  const firstRequest = await createSigningRequest(wallet.wallet_index, recipientWallet.address_base58, 1000);
+  const secondRequest = await createSigningRequest(wallet.wallet_index, recipientWallet.address_base58, 2000);
 
   if (firstRequest.request_id === secondRequest.request_id) {
     throw new Error(`multiple signing requests reused an id: ${JSON.stringify([firstRequest, secondRequest])}`);
@@ -1109,7 +1123,6 @@ main().catch((error) => {
 
   docker compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
-const recipient = "11111111111111111111111111111111";
 
 async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, options);
@@ -1140,12 +1153,19 @@ async function expectStatus(path, status, options = {}) {
 }
 
 async function main() {
+  const walletList = await expectOk("/api/wallets");
+  const senderWallet = walletList.wallets.find((wallet) => wallet.wallet_index === 0);
+
+  if (!senderWallet) {
+    throw new Error(`wallet 0 was not available for failure regression: ${JSON.stringify(walletList)}`);
+  }
+
   const failedRequest = await expectOk("/api/signing-requests", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       wallet_index: 0,
-      recipient_address_base58: recipient,
+      recipient_address_base58: senderWallet.address_base58,
       amount_lamports: 3000
     })
   });
@@ -1304,6 +1324,257 @@ main().catch((error) => {
 '
 }
 
+check_phase_six_stack() {
+  phase_six_compose config >/dev/null
+  phase_six_compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  npm --prefix frontend run build
+  phase_six_compose up -d --force-recreate
+  phase_six_compose ps
+
+  phase_six_compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.signing_requests CASCADE; TRUNCATE coordinator.wallets CASCADE; TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state; TRUNCATE node_a.node_signing_states; TRUNCATE node_b.node_signing_states;"
+
+  phase_six_compose exec -T frontend node -e '
+const baseUrl = "http://coordinator:8080";
+const forbiddenFields = [
+  "root_share",
+  "private_share",
+  "nonce_secret",
+  "secret_key",
+  "key_package_ciphertext",
+  "signing_nonces_ciphertext"
+];
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, options = {}, attempts = 120) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      const body = text ? JSON.parse(text) : null;
+
+      if (response.ok) {
+        return body;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await sleep(1000);
+  }
+
+  throw lastError;
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  return { response, body };
+}
+
+async function expectOk(path, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function expectStatus(path, status, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (response.status !== status) {
+    throw new Error(`${path} expected HTTP ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function triggerDkg(sessionId, nodeId, round) {
+  return expectOk(`/api/dkg/sessions/${sessionId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+async function triggerSigning(requestId, nodeId, round) {
+  return expectOk(`/api/signing-requests/${requestId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+function assertNoForbiddenFields(value) {
+  const encoded = JSON.stringify(value);
+
+  for (const field of forbiddenFields) {
+    if (encoded.includes(field)) {
+      throw new Error(`forbidden private field ${field} appeared in public payload: ${encoded}`);
+    }
+  }
+}
+
+async function main() {
+  await fetchWithRetry(`${baseUrl}/health`);
+  await fetchWithRetry("http://node-a:8081/health");
+  await fetchWithRetry("http://node-b:8081/health");
+
+  const session = await expectOk("/api/dkg/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      threshold: 2,
+      participants: ["node-a", "node-b"]
+    })
+  });
+
+  await triggerDkg(session.session_id, "node-a", 1);
+  await triggerDkg(session.session_id, "node-b", 1);
+  await triggerDkg(session.session_id, "node-a", 2);
+  await triggerDkg(session.session_id, "node-b", 2);
+  await triggerDkg(session.session_id, "node-a", 3);
+  await triggerDkg(session.session_id, "node-b", 3);
+
+  const wallet = await expectOk("/api/wallets", { method: "POST" });
+  const recipientWallet = await expectOk("/api/wallets", { method: "POST" });
+  const signingRequest = await expectOk("/api/signing-requests", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: wallet.wallet_index,
+      recipient_address_base58: recipientWallet.address_base58,
+      amount_lamports: 1000
+    })
+  });
+
+  await expectStatus(`/api/signing-requests/${signingRequest.request_id}/broadcast`, 409, {
+    method: "POST"
+  });
+  await triggerSigning(signingRequest.request_id, "node-a", 1);
+  await triggerSigning(signingRequest.request_id, "node-b", 1);
+  const nodeARound2 = await triggerSigning(signingRequest.request_id, "node-a", 2);
+  const nodeBRound2 = await triggerSigning(signingRequest.request_id, "node-b", 2);
+
+  if (!nodeARound2.public_payload?.child_verifying_share_hex || !nodeBRound2.public_payload?.signature_share_hex) {
+    throw new Error(`signing rounds did not return public child verifying material: ${JSON.stringify([nodeARound2, nodeBRound2])}`);
+  }
+
+  const ready = await expectOk(`/api/signing-requests/${signingRequest.request_id}`);
+
+  if (ready.status !== "READY_TO_AGGREGATE" || !ready.message_hash_hex || !ready.recent_blockhash) {
+    throw new Error(`request is not ready for broadcast: ${JSON.stringify(ready)}`);
+  }
+
+  const broadcasted = await expectOk(`/api/signing-requests/${signingRequest.request_id}/broadcast`, {
+    method: "POST"
+  });
+
+  if (broadcasted.status !== "BROADCASTED" || !broadcasted.transaction_signature || !broadcasted.explorer_url) {
+    throw new Error(`broadcast did not store transaction metadata: ${JSON.stringify(broadcasted)}`);
+  }
+
+  await expectStatus(`/api/signing-requests/${signingRequest.request_id}/nodes/node-a/rounds/1`, 409, {
+    method: "POST"
+  });
+
+  const confirmed = await expectOk(`/api/signing-requests/${signingRequest.request_id}/confirm`, {
+    method: "POST"
+  });
+
+  if (confirmed.status !== "CONFIRMED") {
+    throw new Error(`confirmation did not advance request: ${JSON.stringify(confirmed)}`);
+  }
+
+  assertNoForbiddenFields(ready);
+  assertNoForbiddenFields(broadcasted);
+  assertNoForbiddenFields(confirmed);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  phase_six_compose exec -T frontend node -e '
+async function fetchWithRetry(url, attempts = 120) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+
+      if (response.ok) {
+        return { response, text };
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${text}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  let html = "";
+  let cssBodies = [];
+
+  for (let attempt = 1; attempt <= 120; attempt += 1) {
+    html = (await fetchWithRetry("http://localhost:3000/", 1)).text;
+
+    if (!html.includes("FROST Template")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    const stylesheetPaths = Array.from(html.matchAll(/href="([^"]+\.css)"/g), (match) => match[1]);
+
+    if (stylesheetPaths.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    cssBodies = await Promise.all(
+      stylesheetPaths.map(async (path) => {
+        return (await fetchWithRetry(new URL(path, "http://localhost:3000/").toString(), 1)).text;
+      })
+    );
+
+    if (cssBodies.some((css) => /\.broadcast-actions\s*\{[^}]*display:\s*flex/.test(css))) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  if (!html.includes("FROST Template")) {
+    throw new Error("frontend did not render the FROST Template page");
+  }
+
+  throw new Error("frontend stylesheet did not include broadcast action styles");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -1335,6 +1606,15 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_five_stack
+    ;;
+  6)
+    trap cleanup_phase_six_stack EXIT
+    cleanup_phase_six_stack
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_six_stack
+    cleanup_phase_six_stack
+    trap - EXIT
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."
