@@ -1,8 +1,8 @@
 # Changelog
 
-All notable project changes are tracked here. Versions follow SemVer, with alpha versions used while the interview assignment is still incomplete.
+All notable project changes are tracked here. Versions follow numeric SemVer patch increments.
 
-## [0.1.0-alpha.5] - 2026-06-24
+## [0.1.1] - 2026-06-24
 
 ### Added
 

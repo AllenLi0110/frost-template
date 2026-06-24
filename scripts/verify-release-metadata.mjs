@@ -45,10 +45,10 @@ function parseArgs(argv) {
 
 const { tag } = parseArgs(process.argv.slice(2));
 const version = readText("VERSION").trim();
-const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?)?(?:\+[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?)?$/;
+const semverPattern = /^\d+\.\d+\.\d+$/;
 
 if (!semverPattern.test(version)) {
-  fail(`VERSION must be a SemVer value, got: ${version}`);
+  fail(`VERSION must be a numeric SemVer value like 0.1.1, got: ${version}`);
 }
 
 if (tag !== null) {

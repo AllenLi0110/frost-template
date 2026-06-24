@@ -39,8 +39,8 @@
 
 | Command | Result | Notes |
 |---|---|---|
-| `node scripts/verify-release-metadata.mjs` | Passed | Version metadata matched `0.1.0-alpha.5`. |
-| `node scripts/extract-release-notes.mjs v0.1.0-alpha.5` | Passed | Release notes were extracted from `CHANGELOG.md`. |
+| `node scripts/verify-release-metadata.mjs` | Passed | Version metadata matched `0.1.1`. |
+| `node scripts/extract-release-notes.mjs v0.1.1` | Passed | Release notes were extracted from `CHANGELOG.md`. |
 | `bash -n scripts/verify-phase.sh` | Passed | Shell syntax check passed. |
 | `./scripts/verify-phase.sh 0` | Passed | Repository hygiene and release metadata passed. |
 | `npm --prefix frontend run lint` | Passed | Frontend lint passed. |

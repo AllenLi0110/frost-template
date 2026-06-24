@@ -23,12 +23,10 @@ Recommended GitHub branch rule for `main`:
 
 Use SemVer:
 
-- `0.1.0-alpha.<phase>` while the assignment is still phase-driven and incomplete.
-- `0.1.0` for the first complete reviewer-ready demo.
-- Patch versions for bug fixes that do not change contracts.
-- Minor versions for new protocol or product capabilities.
+- Patch versions for every accepted project checkpoint, such as `0.1.1`, `0.1.2`, and `0.1.3`.
+- Minor versions for larger capability milestones when the project owner explicitly chooses to advance the minor version.
 
-The version must be updated in all release metadata locations:
+The version must be a numeric SemVer value with no prerelease text, such as `0.1.1`. It must be updated in all release metadata locations:
 
 - `VERSION`
 - `frontend/package.json`

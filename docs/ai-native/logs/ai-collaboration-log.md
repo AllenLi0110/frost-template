@@ -251,7 +251,7 @@ Human corrections:
 Verification:
 - Command: `node scripts/verify-release-metadata.mjs`
 - Result: passed
-- Command: `node scripts/extract-release-notes.mjs v0.1.0-alpha.5`
+- Command: `node scripts/extract-release-notes.mjs v0.1.1`
 - Result: passed
 - Command: `bash -n scripts/verify-phase.sh`
 - Result: passed
