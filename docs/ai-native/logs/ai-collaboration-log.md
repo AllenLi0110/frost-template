@@ -104,6 +104,49 @@ Evidence links:
 Follow-up:
 - Phase 2 should build on the Phase 1 axum routers, config structs, Docker Compose topology, and migration layout.
 
+### 2026-06-24 - Phase 2 DKG State Machine
+
+Prompt summary:
+- Started Phase 2 from the `agent/phase-2-dkg-state-machine` branch to make DKG observable, persistent, manually triggerable, and visible in the frontend.
+
+Important context provided:
+- The original Phase 2 prompt focused on backend state transitions, but the project still showed the default Next.js starter page after Phase 1.
+- The Phase 2 scope was updated to include the first reviewer-facing DKG control surface and to record that this was a dynamic adjustment.
+- Placeholder crypto is acceptable only if isolated behind a node-side crypto service boundary.
+
+AI output summary:
+- Added Phase 2 DKG BDD scenarios for frontend visibility, out-of-order rejection, idempotent replay, and restart persistence.
+- Added a DKG state machine contract covering coordinator API, node internal API, database tables, status values, errors, and frontend requirements.
+- Added coordinator DKG session and node-step persistence with migration `0002_create_dkg_tables.sql`.
+- Added coordinator public DKG APIs for create/read active session and per-node/per-round triggering.
+- Added transition validation for Round 2 and Round 3 prerequisites.
+- Added idempotent completed-step replay using stored public payloads.
+- Added TSS node internal DKG endpoints backed by `DkgCryptoService` and `PlaceholderDkgCryptoService`.
+- Replaced the default Next.js starter page with a DKG control surface and a Next.js coordinator proxy route.
+- Updated Phase 2 verification to run tests, lint/build, compose health checks, DKG smoke tests, restart persistence, and frontend load checks.
+
+Human corrections:
+- Phase 2 needed to include a visible frontend control surface because API-only progress made the project hard to inspect.
+
+Verification:
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed outside the sandbox after Turbopack process creation was blocked inside the sandbox
+- Command: `./scripts/verify-phase.sh 2`
+- Result: passed
+- Command: desktop and mobile headless browser screenshots
+- Result: DKG control surface rendered; mobile layout metrics reported `innerWidth=390`, `scrollWidth=390`, and no overflowing elements
+
+Evidence links:
+- Files: `features/dkg-flow.feature`, `docs/contracts/dkg-state-machine.md`, `backend/migrations/0002_create_dkg_tables.sql`, `backend/coordinator/src/lib.rs`, `backend/tss-node/src/lib.rs`, `frontend/app/page.tsx`, `frontend/app/api/coordinator/[...path]/route.ts`, `scripts/verify-phase.sh`, `docs/ai-native/logs/phase-2-agent-run-report.md`
+- Screenshots: `/tmp/frost-template-phase2-dkg-ui.png`, `/tmp/frost-template-phase2-dkg-mobile-fixed2.png`
+
+Follow-up:
+- Phase 3 should replace the placeholder DKG implementation behind `DkgCryptoService` with real `frost-ed25519` behavior while preserving the coordinator API contract and frontend workflow.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

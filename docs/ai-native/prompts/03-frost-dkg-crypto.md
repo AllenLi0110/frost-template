@@ -6,6 +6,7 @@ You are working in the repository root.
 Read first:
 - docs/ai-native/00-agent-context.md
 - docs/ai-native/01-implementation-roadmap.md
+- docs/contracts/dkg-state-machine.md
 - features/dkg-flow.feature
 - External system design reference: 15.design-frost-template.md
 - backend/Cargo.toml
@@ -15,6 +16,7 @@ Replace placeholder DKG behavior with real frost-ed25519 DKG integration.
 
 Scope:
 - Implement CryptoService DKG adapter using frost-ed25519 2.1.0.
+- Replace the Phase 2 PlaceholderDkgCryptoService behavior without changing the coordinator state machine contract.
 - Persist node-local encrypted root share and key package.
 - Persist coordinator-visible public DKG packages and master public key.
 - Add tests proving coordinator persistence does not contain root shares.
@@ -36,4 +38,3 @@ Definition of done:
 - Tests pass.
 - Collaboration log records any crypto API issues and corrections.
 ```
-

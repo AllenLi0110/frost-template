@@ -60,9 +60,13 @@ Scope:
 - TSS node internal DKG endpoints.
 - Persistence and idempotency.
 - Tests for invalid transitions.
+- Frontend DKG control surface and coordinator proxy.
+
+Phase 2 scope update:
+- The initial Phase 2 outline focused on backend state transitions. After Phase 1, the project still showed the default Next.js starter page, so Phase 2 now also includes the first visible protocol control surface. This keeps the demo reviewer-facing instead of API-only.
 
 Definition of done:
-- Frontend or API client can independently trigger Node A/B Round 1, 2, and 3.
+- Frontend and API clients can independently trigger Node A/B Round 1, 2, and 3.
 - Coordinator rejects out-of-order rounds.
 - Completed DKG status persists after restart.
 
