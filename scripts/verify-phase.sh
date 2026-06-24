@@ -553,6 +553,264 @@ main().catch((error) => {
 '
 }
 
+check_phase_four_stack() {
+  docker compose config >/dev/null
+  docker compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  npm --prefix frontend run build
+  docker compose up -d --force-recreate
+  docker compose ps
+
+  if docker compose port node-a 8081 >/tmp/frost-node-a-port.txt 2>&1; then
+    echo "node-a must not publish its internal API port to the host"
+    cat /tmp/frost-node-a-port.txt
+    exit 1
+  fi
+
+  if docker compose port node-b 8081 >/tmp/frost-node-b-port.txt 2>&1; then
+    echo "node-b must not publish its internal API port to the host"
+    cat /tmp/frost-node-b-port.txt
+    exit 1
+  fi
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, options = {}, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+
+      if (response.ok) {
+        return response;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  await fetchWithRetry("http://coordinator:8080/health");
+  await fetchWithRetry("http://node-a:8081/health");
+  await fetchWithRetry("http://node-b:8081/health");
+  const nodes = await fetchWithRetry("http://coordinator:8080/health/nodes").then((response) => response.json());
+  const unreachable = nodes.nodes.filter((node) => !node.reachable);
+
+  if (unreachable.length > 0) {
+    throw new Error(`unreachable nodes: ${JSON.stringify(unreachable)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.wallets; TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state;"
+
+  docker compose exec -T frontend node -e '
+const baseUrl = "http://coordinator:8080";
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  return { response, body };
+}
+
+async function expectOk(path, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function expectStatus(path, status, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (response.status !== status) {
+    throw new Error(`${path} expected HTTP ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function trigger(sessionId, nodeId, round) {
+  return expectOk(`/api/dkg/sessions/${sessionId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+function assertWallet(wallet, expectedIndex) {
+  if (wallet.wallet_index !== expectedIndex) {
+    throw new Error(`expected wallet index ${expectedIndex}, got ${JSON.stringify(wallet)}`);
+  }
+
+  if (wallet.derivation_path !== `m/${expectedIndex}`) {
+    throw new Error(`unexpected derivation path: ${JSON.stringify(wallet)}`);
+  }
+
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(wallet.address_base58) || wallet.address_base58.length < 32) {
+    throw new Error(`wallet address is not Base58-like: ${JSON.stringify(wallet)}`);
+  }
+
+  if (wallet.public_key_base58 !== wallet.address_base58) {
+    throw new Error(`Solana address should match the derived public key: ${JSON.stringify(wallet)}`);
+  }
+}
+
+async function main() {
+  await expectStatus("/api/wallets", 409, { method: "POST" });
+
+  const session = await expectOk("/api/dkg/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      threshold: 2,
+      participants: ["node-a", "node-b"]
+    })
+  });
+
+  await expectStatus("/api/wallets", 409, { method: "POST" });
+
+  await trigger(session.session_id, "node-a", 1);
+  await trigger(session.session_id, "node-b", 1);
+  await trigger(session.session_id, "node-a", 2);
+  await trigger(session.session_id, "node-b", 2);
+  await trigger(session.session_id, "node-a", 3);
+  const completedRound = await trigger(session.session_id, "node-b", 3);
+
+  if (completedRound.dkg_status !== "COMPLETED") {
+    throw new Error(`DKG did not complete: ${JSON.stringify(completedRound)}`);
+  }
+
+  const active = await expectOk("/api/dkg/sessions/active");
+
+  if (active.status !== "COMPLETED" || !active.master_public_key_base58) {
+    throw new Error(`active DKG session is not completed: ${JSON.stringify(active)}`);
+  }
+
+  const wallet0 = await expectOk("/api/wallets", { method: "POST" });
+  const wallet1 = await expectOk("/api/wallets", { method: "POST" });
+  const wallet2 = await expectOk("/api/wallets", { method: "POST" });
+
+  assertWallet(wallet0, 0);
+  assertWallet(wallet1, 1);
+  assertWallet(wallet2, 2);
+
+  const addresses = new Set([wallet0.address_base58, wallet1.address_base58, wallet2.address_base58]);
+
+  if (addresses.size !== 3) {
+    throw new Error(`derived wallet addresses must be unique: ${JSON.stringify([wallet0, wallet1, wallet2])}`);
+  }
+
+  const walletList = await expectOk("/api/wallets");
+  const indexes = walletList.wallets.map((wallet) => wallet.wallet_index).join(",");
+
+  if (indexes !== "0,1,2") {
+    throw new Error(`wallet list returned unexpected indexes: ${JSON.stringify(walletList)}`);
+  }
+
+  const balance = await expectOk(`/api/wallets/${wallet0.wallet_index}/balance`);
+
+  if (balance.address_base58 !== wallet0.address_base58) {
+    throw new Error(`balance response used a different address: ${JSON.stringify(balance)}`);
+  }
+
+  if (!["AVAILABLE", "UNAVAILABLE"].includes(balance.balance_status)) {
+    throw new Error(`balance lookup did not return a graceful status: ${JSON.stringify(balance)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose restart coordinator
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, options = {}, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      const body = text ? JSON.parse(text) : null;
+
+      if (response.ok) {
+        return body;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  const walletList = await fetchWithRetry("http://coordinator:8080/api/wallets");
+  const indexes = walletList.wallets.map((wallet) => wallet.wallet_index).join(",");
+
+  if (indexes !== "0,1,2") {
+    throw new Error(`wallet list did not survive restart: ${JSON.stringify(walletList)}`);
+  }
+
+  const nextWallet = await fetchWithRetry("http://coordinator:8080/api/wallets", {
+    method: "POST"
+  });
+
+  if (nextWallet.wallet_index !== 3) {
+    throw new Error(`wallet index was reused after restart: ${JSON.stringify(nextWallet)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose exec -T frontend node -e '
+async function main() {
+  const response = await fetch("http://localhost:3000/");
+  const html = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`frontend returned HTTP ${response.status}`);
+  }
+
+  if (!html.includes("FROST Template") || !html.includes("Wallet Derivation")) {
+    throw new Error("frontend did not render the DKG and wallet control surface");
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -573,6 +831,11 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_three_stack
+    ;;
+  4)
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_four_stack
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."

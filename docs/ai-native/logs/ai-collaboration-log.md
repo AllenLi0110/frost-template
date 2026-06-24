@@ -188,6 +188,47 @@ Evidence links:
 Follow-up:
 - Phase 4 should derive Solana wallet addresses from the completed public DKG context while keeping private child share derivation node-local.
 
+### 2026-06-24 - Phase 4 Wallet Derivation
+
+Prompt summary:
+- Started Phase 4 from the `agent/phase-4-wallet-derivation` branch to derive Solana wallet addresses from completed DKG public material.
+
+Important context provided:
+- Wallet creation must wait for completed DKG.
+- Coordinator may use public derivation material, but must not store private child shares.
+- Node A and Node B should not be required for public address derivation.
+- Balance lookup should fail gracefully when Solana RPC is unavailable.
+
+AI output summary:
+- Added wallet derivation BDD scenarios and a wallet derivation contract.
+- Added `coordinator.dkg_sessions.public_derivation_context` and `coordinator.wallets`.
+- Added Coordinator wallet APIs for create, list, and balance refresh.
+- Implemented deterministic `hd-wallet` Edwards non-hardened public derivation.
+- Added Solana JSON-RPC balance lookup with `AVAILABLE` / `UNAVAILABLE` status.
+- Sanitized Solana RPC error messages before storing or returning them.
+- Added frontend wallet panel for wallet creation, address display, balance refresh, and sender selection.
+- Added Phase 4 verification harness.
+
+Human corrections:
+- None during this phase.
+
+Verification:
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 4`
+- Result: passed
+- Note: frontend dev CSS was refreshed by restarting the frontend container after visual inspection showed a stale stylesheet.
+
+Evidence links:
+- Files: `features/wallet-derivation.feature`, `docs/contracts/wallet-derivation.md`, `backend/migrations/0004_create_wallet_tables.sql`, `backend/coordinator/src/lib.rs`, `frontend/app/page.tsx`, `frontend/app/globals.css`, `scripts/verify-phase.sh`, `docs/ai-native/logs/phase-4-agent-run-report.md`
+
+Follow-up:
+- Phase 5 should add transfer preparation and threshold signing while keeping child private material node-local.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

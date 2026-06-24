@@ -33,6 +33,31 @@ type ActionEntry = {
   message: string;
 };
 
+type Wallet = {
+  wallet_index: number;
+  dkg_session_id: string;
+  derivation_path: string;
+  public_key_base58: string;
+  address_base58: string;
+  balance_lamports: number | null;
+  balance_status: string;
+  balance_error_message: string | null;
+  balance_checked_at: string | null;
+  created_at: string;
+};
+
+type WalletListResponse = {
+  wallets: Wallet[];
+};
+
+type WalletBalanceResponse = {
+  wallet_index: number;
+  address_base58: string;
+  balance_lamports: number | null;
+  balance_status: string;
+  balance_error_message: string | null;
+};
+
 const nodes: Array<{ id: NodeId; label: string }> = [
   { id: "node-a", label: "Node A" },
   { id: "node-b", label: "Node B" },
@@ -44,6 +69,14 @@ export default function Home() {
   const [session, setSession] = useState<DkgSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [isWalletLoading, setIsWalletLoading] = useState(true);
+  const [pendingWalletAction, setPendingWalletAction] = useState<string | null>(
+    null,
+  );
+  const [selectedSenderIndex, setSelectedSenderIndex] = useState<number | null>(
+    null,
+  );
   const [lastAction, setLastAction] = useState<ActionEntry>({
     label: "Ready",
     status: "idle",
@@ -52,6 +85,7 @@ export default function Home() {
 
   useEffect(() => {
     void loadActiveSession();
+    void loadWallets();
   }, []);
 
   const completedSteps = useMemo(() => {
@@ -91,6 +125,27 @@ export default function Home() {
     }
   }
 
+  async function loadWallets() {
+    setIsWalletLoading(true);
+
+    try {
+      const response = await fetch("/api/coordinator/api/wallets", {
+        cache: "no-store",
+      });
+      const payload = await readJson<WalletListResponse>(response);
+
+      setWallets(payload.wallets);
+    } catch (error) {
+      setLastAction({
+        label: "Wallet load failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setIsWalletLoading(false);
+    }
+  }
+
   async function createSession() {
     setPendingAction("create-session");
 
@@ -106,6 +161,7 @@ export default function Home() {
       const nextSession = await readJson<DkgSession>(response);
 
       setSession(nextSession);
+      await loadWallets();
       setLastAction({
         label: "Session ready",
         status: "ok",
@@ -138,6 +194,7 @@ export default function Home() {
       const result = await readJson<TriggerRoundResponse>(response);
 
       await loadActiveSession();
+      await loadWallets();
       setLastAction({
         label: `${nodeLabel(nodeId)} Round ${round}`,
         status: "ok",
@@ -153,6 +210,85 @@ export default function Home() {
     } finally {
       setPendingAction(null);
     }
+  }
+
+  async function createWallet() {
+    setPendingWalletAction("create-wallet");
+
+    try {
+      const response = await fetch("/api/coordinator/api/wallets", {
+        method: "POST",
+      });
+      const wallet = await readJson<Wallet>(response);
+
+      await loadWallets();
+      setLastAction({
+        label: "Wallet created",
+        status: "ok",
+        message: `Wallet ${wallet.wallet_index} is ready at ${shortAddress(
+          wallet.address_base58,
+        )}.`,
+      });
+    } catch (error) {
+      setLastAction({
+        label: "Wallet create failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingWalletAction(null);
+    }
+  }
+
+  async function refreshBalance(walletIndex: number) {
+    const actionKey = `balance-${walletIndex}`;
+    setPendingWalletAction(actionKey);
+
+    try {
+      const response = await fetch(
+        `/api/coordinator/api/wallets/${walletIndex}/balance`,
+        { cache: "no-store" },
+      );
+      const balance = await readJson<WalletBalanceResponse>(response);
+
+      setWallets((currentWallets) =>
+        currentWallets.map((wallet) =>
+          wallet.wallet_index === walletIndex
+            ? {
+                ...wallet,
+                balance_lamports: balance.balance_lamports,
+                balance_status: balance.balance_status,
+                balance_error_message: balance.balance_error_message,
+              }
+            : wallet,
+        ),
+      );
+      setLastAction({
+        label: `Wallet ${walletIndex} balance`,
+        status: balance.balance_status === "AVAILABLE" ? "ok" : "error",
+        message:
+          balance.balance_status === "AVAILABLE"
+            ? formatBalance(balance.balance_lamports)
+            : balance.balance_error_message ?? "Balance unavailable.",
+      });
+    } catch (error) {
+      setLastAction({
+        label: `Wallet ${walletIndex} balance`,
+        status: "error",
+        message: errorMessage(error),
+      });
+    } finally {
+      setPendingWalletAction(null);
+    }
+  }
+
+  function selectSender(walletIndex: number) {
+    setSelectedSenderIndex(walletIndex);
+    setLastAction({
+      label: "Sender selected",
+      status: "ok",
+      message: `Wallet ${walletIndex} is selected for the next transfer phase.`,
+    });
   }
 
   return (
@@ -259,6 +395,97 @@ export default function Home() {
           </div>
         </aside>
       </section>
+
+      <section className="wallet-panel" aria-labelledby="wallet-title">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Phase 4</p>
+            <h2 id="wallet-title">Wallet Derivation</h2>
+          </div>
+          <div className="wallet-actions">
+            <button
+              className="primary-button"
+              disabled={
+                session?.status !== "COMPLETED" || pendingWalletAction !== null
+              }
+              onClick={() => void createWallet()}
+              type="button"
+            >
+              {pendingWalletAction === "create-wallet"
+                ? "Creating..."
+                : "Create Wallet"}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={isWalletLoading}
+              onClick={() => void loadWallets()}
+              type="button"
+            >
+              {isWalletLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {wallets.length === 0 ? (
+          <div className="empty-wallet-state">
+            <strong>No wallets</strong>
+            <p>
+              {session?.status === "COMPLETED"
+                ? "Create the first derived wallet from the completed DKG."
+                : "Complete DKG before deriving wallets."}
+            </p>
+          </div>
+        ) : (
+          <div className="wallet-list" role="list">
+            {wallets.map((wallet) => {
+              const balanceActionKey = `balance-${wallet.wallet_index}`;
+              const isSelected = selectedSenderIndex === wallet.wallet_index;
+
+              return (
+                <article className="wallet-row" key={wallet.wallet_index} role="listitem">
+                  <div className="wallet-index">
+                    <span>Index</span>
+                    <strong>{wallet.wallet_index}</strong>
+                  </div>
+                  <div className="wallet-address">
+                    <span>{wallet.derivation_path}</span>
+                    <strong>{wallet.address_base58}</strong>
+                  </div>
+                  <div className="wallet-balance">
+                    <span className={statusClass(wallet.balance_status)}>
+                      {wallet.balance_status}
+                    </span>
+                    <strong>{formatBalance(wallet.balance_lamports)}</strong>
+                    {wallet.balance_error_message ? (
+                      <p>{wallet.balance_error_message}</p>
+                    ) : null}
+                  </div>
+                  <div className="wallet-row-actions">
+                    <button
+                      className="round-button"
+                      disabled={pendingWalletAction !== null}
+                      onClick={() => void refreshBalance(wallet.wallet_index)}
+                      type="button"
+                    >
+                      {pendingWalletAction === balanceActionKey
+                        ? "Checking..."
+                        : "Balance"}
+                    </button>
+                    <button
+                      className={isSelected ? "primary-button" : "secondary-button"}
+                      disabled={pendingWalletAction !== null}
+                      onClick={() => selectSender(wallet.wallet_index)}
+                      type="button"
+                    >
+                      {isSelected ? "Selected" : "Select"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </main>
   );
 }
@@ -318,6 +545,18 @@ function errorMessage(error: unknown): string {
 
 function shortId(value: string): string {
   return value.slice(0, 8);
+}
+
+function shortAddress(value: string): string {
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function formatBalance(lamports: number | null): string {
+  if (lamports === null) {
+    return "Not checked";
+  }
+
+  return `${lamports} lamports (${(lamports / 1_000_000_000).toFixed(9)} SOL)`;
 }
 
 function nodeLabel(nodeId: NodeId): string {
