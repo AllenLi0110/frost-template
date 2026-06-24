@@ -143,6 +143,7 @@ pub struct DkgRoundResponse {
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
 pub struct SigningRoundRequest {
+    dkg_session_id: Uuid,
     wallet_index: i32,
     sender_address_base58: String,
     recipient_address_base58: String,
@@ -546,7 +547,8 @@ async fn run_frost_signing_round1(
         }
     }
 
-    let key_package = load_completed_key_package(pool, schema, &state.config).await?;
+    let key_package =
+        load_completed_key_package(pool, schema, &state.config, request.dkg_session_id).await?;
     let mut rng = OsRng;
     let (signing_nonces, signing_commitments) =
         frost::round1::commit(key_package.signing_share(), &mut rng);
@@ -608,7 +610,8 @@ async fn run_frost_signing_round2(
     let signing_nonces_bytes = open_bytes(&state.config, &signing_nonces_ciphertext)?;
     let signing_nonces =
         frost::round1::SigningNonces::deserialize(&signing_nonces_bytes).map_err(crypto_error)?;
-    let key_package = load_completed_key_package(pool, schema, &state.config).await?;
+    let key_package =
+        load_completed_key_package(pool, schema, &state.config, request.dkg_session_id).await?;
     let message_bytes = signing_message_bytes(&request)?;
     let commitments = decode_signing_commitments(&request.signing_commitments, &state.config.node_id)?;
     claim_signing_nonce_for_round2(pool, schema, request_id, &request.message_hash_hex).await?;
@@ -833,18 +836,18 @@ async fn load_completed_key_package(
     pool: &PgPool,
     schema: &str,
     config: &NodeConfig,
+    dkg_session_id: Uuid,
 ) -> Result<frost::keys::KeyPackage, NodeDkgError> {
     let query = format!(
         r#"
         SELECT key_package_ciphertext
         FROM {schema}.node_dkg_state
-        WHERE status = $1 AND key_package_ciphertext IS NOT NULL
-        ORDER BY updated_at DESC
-        LIMIT 1
+        WHERE status = $1 AND session_id = $2 AND key_package_ciphertext IS NOT NULL
         "#
     );
     let row = sqlx::query_as::<_, CompletedKeyPackageRow>(&query)
         .bind(NODE_DKG_STATUS_COMPLETED)
+        .bind(dkg_session_id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| {
@@ -1506,6 +1509,7 @@ mod tests {
         hasher.update(canonical_message.as_bytes());
         let message_hash_hex = hex::encode(hasher.finalize());
         let request = SigningRoundRequest {
+            dkg_session_id: Uuid::new_v4(),
             wallet_index: 0,
             sender_address_base58: bs58::encode([2_u8; 32]).into_string(),
             recipient_address_base58: bs58::encode([3_u8; 32]).into_string(),

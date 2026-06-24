@@ -67,6 +67,7 @@ type SigningStep = {
 
 type SigningRequest = {
   request_id: string;
+  dkg_session_id: string;
   wallet_index: number;
   sender_address_base58: string;
   recipient_address_base58: string;

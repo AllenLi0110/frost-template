@@ -40,6 +40,7 @@ const SIGNING_STATUS_COMMITMENTS_IN_PROGRESS: &str = "COMMITMENTS_IN_PROGRESS";
 const SIGNING_STATUS_COMMITMENTS_READY: &str = "COMMITMENTS_READY";
 const SIGNING_STATUS_SHARES_IN_PROGRESS: &str = "SHARES_IN_PROGRESS";
 const SIGNING_STATUS_READY_TO_AGGREGATE: &str = "READY_TO_AGGREGATE";
+const SIGNING_STATUS_FAILED: &str = STATUS_FAILED;
 const SIGNING_MESSAGE_FORMAT: &str = "frost-template-transfer-intent-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,6 +232,7 @@ pub struct SigningRequestListResponse {
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct SigningRequestResponse {
     request_id: Uuid,
+    dkg_session_id: Uuid,
     wallet_index: i32,
     sender_address_base58: String,
     recipient_address_base58: String,
@@ -274,6 +276,7 @@ struct NodeSigningRoundResponse {
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 struct NodeSigningRoundRequest {
+    dkg_session_id: Uuid,
     wallet_index: i32,
     sender_address_base58: String,
     recipient_address_base58: String,
@@ -316,6 +319,7 @@ struct WalletRow {
 #[derive(Debug, Clone, FromRow)]
 struct SigningRequestRow {
     id: Uuid,
+    dkg_session_id: Uuid,
     wallet_index: i32,
     sender_address_base58: String,
     recipient_address_base58: String,
@@ -725,6 +729,7 @@ async fn trigger_signing_round(
     let request = fetch_signing_request(pool, request_id)
         .await?
         .ok_or(DkgError::SigningRequestNotFound)?;
+    validate_signing_request_can_transition(&request)?;
     let steps = fetch_signing_steps(pool, request_id).await?;
     let step = steps
         .iter()
@@ -1163,6 +1168,19 @@ async fn mark_signing_step_failed(
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1, error_message = $2, updated_at = now()
+        WHERE id = $3
+        "#,
+    )
+    .bind(SIGNING_STATUS_FAILED)
+    .bind(error_message)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
@@ -1283,22 +1301,24 @@ async fn fetch_signing_request(
     sqlx::query_as::<_, SigningRequestRow>(
         r#"
         SELECT
-            id,
-            wallet_index,
-            sender_address_base58,
-            recipient_address_base58,
-            amount_lamports,
-            status,
-            message_payload,
-            message_hash_hex,
-            recent_blockhash,
-            transaction_signature,
-            explorer_url,
-            error_message,
-            created_at::text AS created_at,
-            updated_at::text AS updated_at
-        FROM coordinator.signing_requests
-        WHERE id = $1
+            sr.id,
+            w.dkg_session_id,
+            sr.wallet_index,
+            sr.sender_address_base58,
+            sr.recipient_address_base58,
+            sr.amount_lamports,
+            sr.status,
+            sr.message_payload,
+            sr.message_hash_hex,
+            sr.recent_blockhash,
+            sr.transaction_signature,
+            sr.explorer_url,
+            sr.error_message,
+            sr.created_at::text AS created_at,
+            sr.updated_at::text AS updated_at
+        FROM coordinator.signing_requests sr
+        JOIN coordinator.wallets w USING (wallet_index)
+        WHERE sr.id = $1
         "#,
     )
     .bind(request_id)
@@ -1317,23 +1337,25 @@ async fn fetch_signing_requests(
         return sqlx::query_as::<_, SigningRequestRow>(
             r#"
             SELECT
-                id,
-                wallet_index,
-                sender_address_base58,
-                recipient_address_base58,
-                amount_lamports,
-                status,
-                message_payload,
-                message_hash_hex,
-                recent_blockhash,
-                transaction_signature,
-                explorer_url,
-                error_message,
-                created_at::text AS created_at,
-                updated_at::text AS updated_at
-            FROM coordinator.signing_requests
-            WHERE status IN ($1, $2, $3, $4, $5)
-            ORDER BY created_at DESC
+                sr.id,
+                w.dkg_session_id,
+                sr.wallet_index,
+                sr.sender_address_base58,
+                sr.recipient_address_base58,
+                sr.amount_lamports,
+                sr.status,
+                sr.message_payload,
+                sr.message_hash_hex,
+                sr.recent_blockhash,
+                sr.transaction_signature,
+                sr.explorer_url,
+                sr.error_message,
+                sr.created_at::text AS created_at,
+                sr.updated_at::text AS updated_at
+            FROM coordinator.signing_requests sr
+            JOIN coordinator.wallets w USING (wallet_index)
+            WHERE sr.status IN ($1, $2, $3, $4, $5)
+            ORDER BY sr.created_at DESC
             "#,
         )
         .bind(SIGNING_STATUS_PENDING)
@@ -1350,23 +1372,25 @@ async fn fetch_signing_requests(
         return sqlx::query_as::<_, SigningRequestRow>(
             r#"
             SELECT
-                id,
-                wallet_index,
-                sender_address_base58,
-                recipient_address_base58,
-                amount_lamports,
-                status,
-                message_payload,
-                message_hash_hex,
-                recent_blockhash,
-                transaction_signature,
-                explorer_url,
-                error_message,
-                created_at::text AS created_at,
-                updated_at::text AS updated_at
-            FROM coordinator.signing_requests
-            WHERE status = $1
-            ORDER BY created_at DESC
+                sr.id,
+                w.dkg_session_id,
+                sr.wallet_index,
+                sr.sender_address_base58,
+                sr.recipient_address_base58,
+                sr.amount_lamports,
+                sr.status,
+                sr.message_payload,
+                sr.message_hash_hex,
+                sr.recent_blockhash,
+                sr.transaction_signature,
+                sr.explorer_url,
+                sr.error_message,
+                sr.created_at::text AS created_at,
+                sr.updated_at::text AS updated_at
+            FROM coordinator.signing_requests sr
+            JOIN coordinator.wallets w USING (wallet_index)
+            WHERE sr.status = $1
+            ORDER BY sr.created_at DESC
             "#,
         )
         .bind(status)
@@ -1378,22 +1402,24 @@ async fn fetch_signing_requests(
     sqlx::query_as::<_, SigningRequestRow>(
         r#"
         SELECT
-            id,
-            wallet_index,
-            sender_address_base58,
-            recipient_address_base58,
-            amount_lamports,
-            status,
-            message_payload,
-            message_hash_hex,
-            recent_blockhash,
-            transaction_signature,
-            explorer_url,
-            error_message,
-            created_at::text AS created_at,
-            updated_at::text AS updated_at
-        FROM coordinator.signing_requests
-        ORDER BY created_at DESC
+            sr.id,
+            w.dkg_session_id,
+            sr.wallet_index,
+            sr.sender_address_base58,
+            sr.recipient_address_base58,
+            sr.amount_lamports,
+            sr.status,
+            sr.message_payload,
+            sr.message_hash_hex,
+            sr.recent_blockhash,
+            sr.transaction_signature,
+            sr.explorer_url,
+            sr.error_message,
+            sr.created_at::text AS created_at,
+            sr.updated_at::text AS updated_at
+        FROM coordinator.signing_requests sr
+        JOIN coordinator.wallets w USING (wallet_index)
+        ORDER BY sr.created_at DESC
         "#,
     )
     .fetch_all(pool)
@@ -1764,6 +1790,7 @@ fn signing_request_response_from_rows(
 ) -> SigningRequestResponse {
     SigningRequestResponse {
         request_id: row.id,
+        dkg_session_id: row.dkg_session_id,
         wallet_index: row.wallet_index,
         sender_address_base58: row.sender_address_base58,
         recipient_address_base58: row.recipient_address_base58,
@@ -1828,6 +1855,16 @@ fn validate_create_signing_request(
     if recipient_bytes.len() != 32 {
         return Err(DkgError::InvalidSigningRequest(
             "recipient_address_base58 must decode to 32 bytes".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_signing_request_can_transition(request: &SigningRequestRow) -> Result<(), DkgError> {
+    if request.status == SIGNING_STATUS_FAILED {
+        return Err(DkgError::SigningTransitionBlocked(
+            "signing request is FAILED; create a new request".to_string(),
         ));
     }
 
@@ -1920,6 +1957,7 @@ async fn build_node_signing_round_request(
     };
 
     Ok(NodeSigningRoundRequest {
+        dkg_session_id: request.dkg_session_id,
         wallet_index: request.wallet_index,
         sender_address_base58: request.sender_address_base58.clone(),
         recipient_address_base58: request.recipient_address_base58.clone(),
@@ -2566,6 +2604,16 @@ mod tests {
     }
 
     #[test]
+    fn failed_signing_request_blocks_later_transitions() {
+        let request = signing_request_row_with_status(SIGNING_STATUS_FAILED);
+
+        let error = validate_signing_request_can_transition(&request)
+            .expect_err("failed signing requests should not transition");
+
+        assert!(matches!(error, DkgError::SigningTransitionBlocked(_)));
+    }
+
+    #[test]
     fn retriggering_completed_step_returns_stored_public_payload() {
         let session_id = Uuid::new_v4();
         let session = DkgSessionRow {
@@ -2865,6 +2913,26 @@ mod tests {
             round,
             status: STATUS_COMPLETED.to_string(),
             public_payload: Some(SqlxJson(public_payload)),
+        }
+    }
+
+    fn signing_request_row_with_status(status: &str) -> SigningRequestRow {
+        SigningRequestRow {
+            id: Uuid::new_v4(),
+            dkg_session_id: Uuid::new_v4(),
+            wallet_index: 0,
+            sender_address_base58: bs58::encode([2_u8; 32]).into_string(),
+            recipient_address_base58: bs58::encode([3_u8; 32]).into_string(),
+            amount_lamports: 1,
+            status: status.to_string(),
+            message_payload: None,
+            message_hash_hex: None,
+            recent_blockhash: None,
+            transaction_signature: None,
+            explorer_url: None,
+            error_message: None,
+            created_at: "2026-06-24 00:00:00+00".to_string(),
+            updated_at: "2026-06-24 00:00:00+00".to_string(),
         }
     }
 

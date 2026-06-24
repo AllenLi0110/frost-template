@@ -53,6 +53,7 @@ Response:
 ```json
 {
   "request_id": "00000000-0000-0000-0000-000000000000",
+  "dkg_session_id": "00000000-0000-0000-0000-000000000000",
   "wallet_index": 0,
   "sender_address_base58": "9xQeWvG816bUx9EPfY...",
   "recipient_address_base58": "11111111111111111111111111111111",
@@ -81,6 +82,7 @@ Response:
   "requests": [
     {
       "request_id": "00000000-0000-0000-0000-000000000000",
+      "dkg_session_id": "00000000-0000-0000-0000-000000000000",
       "wallet_index": 0,
       "sender_address_base58": "9xQeWvG816bUx9EPfY...",
       "recipient_address_base58": "11111111111111111111111111111111",
@@ -156,6 +158,7 @@ Round 2 request includes all public Round 1 commitments:
 
 ```json
 {
+  "dkg_session_id": "00000000-0000-0000-0000-000000000000",
   "wallet_index": 0,
   "sender_address_base58": "9xQeWvG816bUx9EPfY...",
   "recipient_address_base58": "11111111111111111111111111111111",

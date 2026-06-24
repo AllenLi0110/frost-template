@@ -1095,6 +1095,72 @@ main().catch((error) => {
 });
 '
 
+  docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "DELETE FROM node_a.node_dkg_state;"
+
+  docker compose exec -T frontend node -e '
+const baseUrl = "http://coordinator:8080";
+const recipient = "11111111111111111111111111111111";
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  return { response, body };
+}
+
+async function expectOk(path, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function expectStatus(path, status, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (response.status !== status) {
+    throw new Error(`${path} expected HTTP ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function main() {
+  const failedRequest = await expectOk("/api/signing-requests", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: 0,
+      recipient_address_base58: recipient,
+      amount_lamports: 3000
+    })
+  });
+
+  await expectStatus(`/api/signing-requests/${failedRequest.request_id}/nodes/node-a/rounds/1`, 502, {
+    method: "POST"
+  });
+
+  const failed = await expectOk(`/api/signing-requests/${failedRequest.request_id}`);
+
+  if (failed.status !== "FAILED" || !failed.error_message) {
+    throw new Error(`failed node call did not mark request FAILED: ${JSON.stringify(failed)}`);
+  }
+
+  await expectStatus(`/api/signing-requests/${failedRequest.request_id}/nodes/node-b/rounds/1`, 409, {
+    method: "POST"
+  });
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
   local node_a_nonce_count
   node_a_nonce_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM node_a.node_signing_states WHERE signing_nonces_ciphertext LIKE 'v1:%' AND signature_share_hex IS NOT NULL AND round2_consumed_at IS NOT NULL;")"
   if [[ "$node_a_nonce_count" != "1" ]]; then
