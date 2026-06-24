@@ -60,21 +60,27 @@ Purpose:
 Expected checks after implementation:
 
 ```bash
-docker compose run --rm --no-deps coordinator cargo test --workspace
-npm --prefix frontend run lint
-npm --prefix frontend run build
-docker compose config
-docker compose up -d --force-recreate
+./scripts/verify-phase.sh 2
 ```
 
-Smoke checks should verify:
+The script verifies:
 
+- Sensitive-pattern scan and whitespace checks.
+- Docker Compose config.
+- Backend workspace tests.
+- Frontend lint.
+- Frontend production build.
+- Docker Compose startup.
+- Coordinator, Node A, Node B, and node registry health.
 - DKG session creation.
 - Round 2 is rejected before both Round 1 steps complete.
 - Round 3 is rejected before both Round 2 steps complete.
 - Re-triggering a completed step returns the stored result.
 - Completed session survives coordinator restart.
 - Frontend can load the active session.
+
+Note:
+- Phase 2 verification truncates `coordinator.dkg_sessions` in the local Docker Compose database before the DKG smoke test so the workflow starts from a deterministic empty active session.
 
 ## Phase 3: FROST DKG Crypto Integration
 

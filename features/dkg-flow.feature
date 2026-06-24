@@ -25,6 +25,14 @@ Feature: Step-by-step DKG flow
     Then the DKG session status should be "COMPLETED"
     And the coordinator should display a master public key in Base58 format
 
+  Scenario: View the DKG control surface
+    Given the frontend is running
+    When I open the DKG control surface
+    Then I should see the active DKG session status
+    And I should see independent controls for Node A Round 1 through Round 3
+    And I should see independent controls for Node B Round 1 through Round 3
+    And I should not see a "Run All" shortcut
+
   Scenario: Reject out-of-order DKG rounds
     Given a DKG session exists
     And Node B DKG Round 1 is "NOT_STARTED"
@@ -32,9 +40,14 @@ Feature: Step-by-step DKG flow
     Then the coordinator should reject the request
     And the DKG session should not advance to "ROUND_2_IN_PROGRESS"
 
+  Scenario: Re-trigger a completed DKG round
+    Given Node A DKG Round 1 is "COMPLETED"
+    When I trigger DKG Round 1 for Node A again
+    Then Node A DKG Round 1 should still be "COMPLETED"
+    And the coordinator should return the original public round result
+
   Scenario: DKG state survives restart
     Given a DKG session is "COMPLETED"
     When the coordinator restarts
     Then the active DKG session should still be "COMPLETED"
     And the master public key should still be available
-

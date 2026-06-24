@@ -1,11 +1,32 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::{postgres::PgPoolOptions, types::Json as SqlxJson, Executor, FromRow, PgPool};
 use std::{error::Error, fmt, sync::Arc, time::Duration};
+use uuid::Uuid;
 
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SOLANA_RPC_URL: &str = "https://api.devnet.solana.com";
+const MASTER_PUBLIC_KEY_PLACEHOLDER: &str = "FrostDemoMasterPublicKey11111111111111111111";
+
+const NODE_IDS: [&str; 2] = ["node-a", "node-b"];
+const DKG_ROUNDS: [i32; 3] = [1, 2, 3];
+const STATUS_NOT_STARTED: &str = "NOT_STARTED";
+const STATUS_COMPLETED: &str = "COMPLETED";
+const STATUS_RUNNING: &str = "RUNNING";
+const STATUS_ROUND_1_IN_PROGRESS: &str = "ROUND_1_IN_PROGRESS";
+const STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
+const STATUS_ROUND_2_IN_PROGRESS: &str = "ROUND_2_IN_PROGRESS";
+const STATUS_ROUND_2_COMPLETE: &str = "ROUND_2_COMPLETE";
+const STATUS_ROUND_3_IN_PROGRESS: &str = "ROUND_3_IN_PROGRESS";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppConfig {
@@ -77,6 +98,7 @@ impl Error for ConfigError {}
 struct AppState {
     config: Arc<AppConfig>,
     http_client: Client,
+    db_pool: Option<PgPool>,
 }
 
 #[derive(Serialize)]
@@ -101,27 +123,153 @@ pub struct NodeHealth {
     reachable: bool,
 }
 
+#[derive(Deserialize)]
+pub struct CreateDkgSessionRequest {
+    threshold: i32,
+    participants: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DkgSessionResponse {
+    session_id: Uuid,
+    status: String,
+    master_public_key_base58: Option<String>,
+    node_steps: Vec<DkgNodeStepResponse>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DkgNodeStepResponse {
+    node_id: String,
+    round: i32,
+    status: String,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct TriggerDkgRoundResponse {
+    session_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: String,
+    dkg_status: String,
+    public_payload: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct NodeDkgRoundResponse {
+    session_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: String,
+    public_payload: Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct DkgSessionRow {
+    id: Uuid,
+    status: String,
+    master_public_key_base58: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct DkgStepRow {
+    node_id: String,
+    round: i32,
+    status: String,
+    public_payload: Option<SqlxJson<Value>>,
+}
+
+#[derive(Debug)]
+enum DkgError {
+    DatabaseUnavailable,
+    InvalidCreateRequest(String),
+    InvalidNode(String),
+    InvalidRound(i32),
+    SessionNotFound,
+    TransitionBlocked(String),
+    NodeCallFailed(String),
+    Database(sqlx::Error),
+}
+
+impl fmt::Display for DkgError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DatabaseUnavailable => write!(f, "database pool is not configured"),
+            Self::InvalidCreateRequest(message) => write!(f, "{message}"),
+            Self::InvalidNode(node_id) => write!(f, "unsupported node id {node_id}"),
+            Self::InvalidRound(round) => write!(f, "unsupported DKG round {round}"),
+            Self::SessionNotFound => write!(f, "DKG session not found"),
+            Self::TransitionBlocked(message) => write!(f, "{message}"),
+            Self::NodeCallFailed(message) => write!(f, "{message}"),
+            Self::Database(error) => write!(f, "database error: {error}"),
+        }
+    }
+}
+
+impl Error for DkgError {}
+
+impl From<sqlx::Error> for DkgError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+impl IntoResponse for DkgError {
+    fn into_response(self) -> Response {
+        let status = match self {
+            Self::DatabaseUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::InvalidCreateRequest(_) | Self::InvalidNode(_) | Self::InvalidRound(_) => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::SessionNotFound => StatusCode::NOT_FOUND,
+            Self::TransitionBlocked(_) => StatusCode::CONFLICT,
+            Self::NodeCallFailed(_) => StatusCode::BAD_GATEWAY,
+            Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let body = Json(json!({ "error": self.to_string() }));
+
+        (status, body).into_response()
+    }
+}
+
 pub fn router(config: AppConfig) -> Router {
+    router_with_pool(config, None)
+}
+
+pub fn router_with_pool(config: AppConfig, db_pool: Option<PgPool>) -> Router {
     let http_client = Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
         .build()
         .expect("reqwest client should build");
     let state = AppState {
         config: Arc::new(config),
         http_client,
+        db_pool,
     };
 
     Router::new()
         .route("/health", get(health))
         .route("/health/nodes", get(node_health))
+        .route("/api/dkg/sessions", post(create_dkg_session))
+        .route("/api/dkg/sessions/active", get(get_active_dkg_session))
+        .route(
+            "/api/dkg/sessions/{session_id}/nodes/{node_id}/rounds/{round}",
+            post(trigger_dkg_round),
+        )
         .with_state(state)
 }
 
 pub async fn run(config: AppConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let db_pool = PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&config.database_url)
+        .await?;
+    run_migrations(&db_pool).await?;
+
     let bind_address = config.bind_address();
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     tracing::info!(%bind_address, "coordinator listening");
-    axum::serve(listener, router(config)).await?;
+    axum::serve(listener, router_with_pool(config, Some(db_pool))).await?;
     Ok(())
 }
 
@@ -145,6 +293,231 @@ async fn node_health(State(state): State<AppState>) -> Json<NodeHealthResponse> 
     })
 }
 
+async fn create_dkg_session(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateDkgSessionRequest>,
+) -> Result<Json<DkgSessionResponse>, DkgError> {
+    validate_create_request(&payload)?;
+    let pool = db_pool(&state)?;
+
+    if let Some(session) = fetch_active_session(pool).await? {
+        return Ok(Json(fetch_session_response(pool, session).await?));
+    }
+
+    let session_id = Uuid::new_v4();
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO coordinator.dkg_sessions
+            (id, threshold, participant_count, status, active)
+        VALUES ($1, $2, $3, $4, TRUE)
+        "#,
+    )
+    .bind(session_id)
+    .bind(payload.threshold)
+    .bind(payload.participants.len() as i32)
+    .bind(STATUS_NOT_STARTED)
+    .execute(&mut *transaction)
+    .await?;
+
+    for node_id in NODE_IDS {
+        for round in DKG_ROUNDS {
+            sqlx::query(
+                r#"
+                INSERT INTO coordinator.dkg_node_steps
+                    (session_id, node_id, round, status)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(session_id)
+            .bind(node_id)
+            .bind(round)
+            .bind(STATUS_NOT_STARTED)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
+
+    transaction.commit().await?;
+
+    let session = fetch_session(pool, session_id)
+        .await?
+        .ok_or(DkgError::SessionNotFound)?;
+
+    Ok(Json(fetch_session_response(pool, session).await?))
+}
+
+async fn get_active_dkg_session(
+    State(state): State<AppState>,
+) -> Result<Json<DkgSessionResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let session = fetch_active_session(pool)
+        .await?
+        .ok_or(DkgError::SessionNotFound)?;
+
+    Ok(Json(fetch_session_response(pool, session).await?))
+}
+
+async fn trigger_dkg_round(
+    State(state): State<AppState>,
+    Path((session_id, node_id, round)): Path<(Uuid, String, i32)>,
+) -> Result<Json<TriggerDkgRoundResponse>, DkgError> {
+    validate_node_id(&node_id)?;
+    validate_round(round)?;
+
+    let pool = db_pool(&state)?;
+    let session = fetch_session(pool, session_id)
+        .await?
+        .ok_or(DkgError::SessionNotFound)?;
+    let steps = fetch_session_steps(pool, session_id).await?;
+    let step = steps
+        .iter()
+        .find(|step| step.node_id == node_id && step.round == round)
+        .ok_or(DkgError::SessionNotFound)?;
+
+    if step.status == STATUS_COMPLETED {
+        return Ok(Json(completed_step_response(&session, step)));
+    }
+
+    validate_round_prerequisites(&steps, round)?;
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.dkg_node_steps
+        SET status = $1, updated_at = now()
+        WHERE session_id = $2 AND node_id = $3 AND round = $4
+        "#,
+    )
+    .bind(STATUS_RUNNING)
+    .bind(session_id)
+    .bind(&node_id)
+    .bind(round)
+    .execute(pool)
+    .await?;
+
+    let node_response = call_node_dkg_round(&state, session_id, &node_id, round).await;
+    let node_response = match node_response {
+        Ok(node_response) => node_response,
+        Err(error) => {
+            mark_step_failed(pool, session_id, &node_id, round, &error.to_string()).await?;
+            return Err(error);
+        }
+    };
+
+    if node_response.session_id != session_id
+        || node_response.node_id != node_id
+        || node_response.round != round
+        || node_response.status != STATUS_COMPLETED
+    {
+        let error = DkgError::NodeCallFailed(
+            "TSS node returned a DKG round response that does not match the request".to_string(),
+        );
+        mark_step_failed(pool, session_id, &node_id, round, &error.to_string()).await?;
+        return Err(error);
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.dkg_node_steps
+        SET status = $1, public_payload = $2, error_message = NULL, completed_at = now(), updated_at = now()
+        WHERE session_id = $3 AND node_id = $4 AND round = $5
+        "#,
+    )
+    .bind(STATUS_COMPLETED)
+    .bind(SqlxJson(node_response.public_payload.clone()))
+    .bind(session_id)
+    .bind(&node_id)
+    .bind(round)
+    .execute(pool)
+    .await?;
+
+    let updated_steps = fetch_session_steps(pool, session_id).await?;
+    let dkg_status = derive_dkg_status(&updated_steps);
+    let master_public_key =
+        (dkg_status == STATUS_COMPLETED).then(|| MASTER_PUBLIC_KEY_PLACEHOLDER.to_string());
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.dkg_sessions
+        SET status = $1, master_public_key_base58 = COALESCE($2, master_public_key_base58), updated_at = now()
+        WHERE id = $3
+        "#,
+    )
+    .bind(&dkg_status)
+    .bind(master_public_key)
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+
+    Ok(Json(TriggerDkgRoundResponse {
+        session_id,
+        node_id,
+        round,
+        status: STATUS_COMPLETED.to_string(),
+        dkg_status,
+        public_payload: Some(node_response.public_payload),
+    }))
+}
+
+async fn call_node_dkg_round(
+    state: &AppState,
+    session_id: Uuid,
+    node_id: &str,
+    round: i32,
+) -> Result<NodeDkgRoundResponse, DkgError> {
+    let node_url = match node_id {
+        "node-a" => &state.config.node_a_url,
+        "node-b" => &state.config.node_b_url,
+        _ => return Err(DkgError::InvalidNode(node_id.to_string())),
+    };
+    let url = format!("{node_url}/internal/dkg/{session_id}/round{round}");
+    let response =
+        state.http_client.post(&url).send().await.map_err(|error| {
+            DkgError::NodeCallFailed(format!("{node_id} DKG call failed: {error}"))
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "".to_string());
+        return Err(DkgError::NodeCallFailed(format!(
+            "{node_id} DKG call returned {status}: {body}"
+        )));
+    }
+
+    response
+        .json::<NodeDkgRoundResponse>()
+        .await
+        .map_err(|error| {
+            DkgError::NodeCallFailed(format!("{node_id} DKG response was invalid: {error}"))
+        })
+}
+
+async fn mark_step_failed(
+    pool: &PgPool,
+    session_id: Uuid,
+    node_id: &str,
+    round: i32,
+    error_message: &str,
+) -> Result<(), DkgError> {
+    sqlx::query(
+        r#"
+        UPDATE coordinator.dkg_node_steps
+        SET status = $1, error_message = $2, updated_at = now()
+        WHERE session_id = $3 AND node_id = $4 AND round = $5
+        "#,
+    )
+    .bind("FAILED")
+    .bind(error_message)
+    .bind(session_id)
+    .bind(node_id)
+    .bind(round)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 async fn check_node(client: &Client, node_id: &'static str, base_url: &str) -> NodeHealth {
     let health_url = format!("{base_url}/health");
     let reachable = match client.get(&health_url).send().await {
@@ -157,6 +530,209 @@ async fn check_node(client: &Client, node_id: &'static str, base_url: &str) -> N
         url: base_url.to_string(),
         reachable,
     }
+}
+
+async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
+    run_sql_file(
+        pool,
+        include_str!("../../migrations/0001_create_foundation_schemas.sql"),
+    )
+    .await?;
+    run_sql_file(
+        pool,
+        include_str!("../../migrations/0002_create_dkg_tables.sql"),
+    )
+    .await
+}
+
+async fn run_sql_file(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
+    for statement in sql
+        .split(';')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        pool.execute(statement).await?;
+    }
+
+    Ok(())
+}
+
+fn validate_create_request(payload: &CreateDkgSessionRequest) -> Result<(), DkgError> {
+    if payload.threshold != 2 {
+        return Err(DkgError::InvalidCreateRequest(
+            "only threshold 2 is supported in this demo".to_string(),
+        ));
+    }
+
+    let mut participants = payload.participants.clone();
+    participants.sort();
+
+    if participants != NODE_IDS {
+        return Err(DkgError::InvalidCreateRequest(
+            "participants must be exactly node-a and node-b".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_node_id(node_id: &str) -> Result<(), DkgError> {
+    if NODE_IDS.contains(&node_id) {
+        Ok(())
+    } else {
+        Err(DkgError::InvalidNode(node_id.to_string()))
+    }
+}
+
+fn validate_round(round: i32) -> Result<(), DkgError> {
+    if DKG_ROUNDS.contains(&round) {
+        Ok(())
+    } else {
+        Err(DkgError::InvalidRound(round))
+    }
+}
+
+fn validate_round_prerequisites(steps: &[DkgStepRow], round: i32) -> Result<(), DkgError> {
+    match round {
+        1 => Ok(()),
+        2 if all_round_steps_completed(steps, 1) => Ok(()),
+        2 => Err(DkgError::TransitionBlocked(
+            "round 2 requires both round 1 steps to be completed".to_string(),
+        )),
+        3 if all_round_steps_completed(steps, 2) => Ok(()),
+        3 => Err(DkgError::TransitionBlocked(
+            "round 3 requires both round 2 steps to be completed".to_string(),
+        )),
+        _ => Err(DkgError::InvalidRound(round)),
+    }
+}
+
+fn derive_dkg_status(steps: &[DkgStepRow]) -> String {
+    if all_round_steps_completed(steps, 3) {
+        return STATUS_COMPLETED.to_string();
+    }
+    if any_round_step_started(steps, 3) {
+        return STATUS_ROUND_3_IN_PROGRESS.to_string();
+    }
+    if all_round_steps_completed(steps, 2) {
+        return STATUS_ROUND_2_COMPLETE.to_string();
+    }
+    if any_round_step_started(steps, 2) {
+        return STATUS_ROUND_2_IN_PROGRESS.to_string();
+    }
+    if all_round_steps_completed(steps, 1) {
+        return STATUS_ROUND_1_COMPLETE.to_string();
+    }
+    if any_round_step_started(steps, 1) {
+        return STATUS_ROUND_1_IN_PROGRESS.to_string();
+    }
+
+    STATUS_NOT_STARTED.to_string()
+}
+
+fn all_round_steps_completed(steps: &[DkgStepRow], round: i32) -> bool {
+    let round_steps: Vec<&DkgStepRow> = steps.iter().filter(|step| step.round == round).collect();
+
+    round_steps.len() == NODE_IDS.len()
+        && round_steps
+            .iter()
+            .all(|step| step.status == STATUS_COMPLETED)
+}
+
+fn any_round_step_started(steps: &[DkgStepRow], round: i32) -> bool {
+    steps
+        .iter()
+        .any(|step| step.round == round && step.status != STATUS_NOT_STARTED)
+}
+
+async fn fetch_active_session(pool: &PgPool) -> Result<Option<DkgSessionRow>, DkgError> {
+    sqlx::query_as::<_, DkgSessionRow>(
+        r#"
+        SELECT id, status, master_public_key_base58
+        FROM coordinator.dkg_sessions
+        WHERE active = TRUE
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<Option<DkgSessionRow>, DkgError> {
+    sqlx::query_as::<_, DkgSessionRow>(
+        r#"
+        SELECT id, status, master_public_key_base58
+        FROM coordinator.dkg_sessions
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_session_steps(pool: &PgPool, session_id: Uuid) -> Result<Vec<DkgStepRow>, DkgError> {
+    sqlx::query_as::<_, DkgStepRow>(
+        r#"
+        SELECT node_id, round, status, public_payload
+        FROM coordinator.dkg_node_steps
+        WHERE session_id = $1
+        ORDER BY node_id, round
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_session_response(
+    pool: &PgPool,
+    session: DkgSessionRow,
+) -> Result<DkgSessionResponse, DkgError> {
+    let steps = fetch_session_steps(pool, session.id).await?;
+
+    Ok(session_response_from_rows(session, steps))
+}
+
+fn session_response_from_rows(
+    session: DkgSessionRow,
+    steps: Vec<DkgStepRow>,
+) -> DkgSessionResponse {
+    DkgSessionResponse {
+        session_id: session.id,
+        status: session.status,
+        master_public_key_base58: session.master_public_key_base58,
+        node_steps: steps
+            .into_iter()
+            .map(|step| DkgNodeStepResponse {
+                node_id: step.node_id,
+                round: step.round,
+                status: step.status,
+            })
+            .collect(),
+    }
+}
+
+fn completed_step_response(session: &DkgSessionRow, step: &DkgStepRow) -> TriggerDkgRoundResponse {
+    TriggerDkgRoundResponse {
+        session_id: session.id,
+        node_id: step.node_id.clone(),
+        round: step.round,
+        status: STATUS_COMPLETED.to_string(),
+        dkg_status: session.status.clone(),
+        public_payload: step
+            .public_payload
+            .as_ref()
+            .map(|payload| payload.0.clone()),
+    }
+}
+
+fn db_pool(state: &AppState) -> Result<&PgPool, DkgError> {
+    state.db_pool.as_ref().ok_or(DkgError::DatabaseUnavailable)
 }
 
 fn required<F>(variable: &'static str, get: &F) -> Result<String, ConfigError>
@@ -233,5 +809,118 @@ mod tests {
                 value: "not-a-port".to_string()
             }
         );
+    }
+
+    #[test]
+    fn blocks_round_two_until_both_round_one_steps_complete() {
+        let steps = vec![
+            step("node-a", 1, STATUS_COMPLETED),
+            step("node-b", 1, STATUS_NOT_STARTED),
+            step("node-a", 2, STATUS_NOT_STARTED),
+            step("node-b", 2, STATUS_NOT_STARTED),
+        ];
+
+        let error = validate_round_prerequisites(&steps, 2)
+            .expect_err("round 2 should wait for both round 1 steps");
+
+        assert!(matches!(error, DkgError::TransitionBlocked(_)));
+    }
+
+    #[test]
+    fn blocks_round_three_until_both_round_two_steps_complete() {
+        let steps = vec![
+            step("node-a", 1, STATUS_COMPLETED),
+            step("node-b", 1, STATUS_COMPLETED),
+            step("node-a", 2, STATUS_COMPLETED),
+            step("node-b", 2, STATUS_NOT_STARTED),
+            step("node-a", 3, STATUS_NOT_STARTED),
+            step("node-b", 3, STATUS_NOT_STARTED),
+        ];
+
+        let error = validate_round_prerequisites(&steps, 3)
+            .expect_err("round 3 should wait for both round 2 steps");
+
+        assert!(matches!(error, DkgError::TransitionBlocked(_)));
+    }
+
+    #[test]
+    fn derives_completed_session_after_both_round_three_steps_complete() {
+        let steps = all_completed_steps();
+
+        assert_eq!(derive_dkg_status(&steps), STATUS_COMPLETED);
+    }
+
+    #[test]
+    fn retriggering_completed_step_returns_stored_public_payload() {
+        let session_id = Uuid::new_v4();
+        let session = DkgSessionRow {
+            id: session_id,
+            status: STATUS_ROUND_1_IN_PROGRESS.to_string(),
+            master_public_key_base58: None,
+        };
+        let completed_step = DkgStepRow {
+            node_id: "node-a".to_string(),
+            round: 1,
+            status: STATUS_COMPLETED.to_string(),
+            public_payload: Some(SqlxJson(json!({
+                "kind": "stored-round-result",
+                "node_id": "node-a",
+                "round": 1
+            }))),
+        };
+
+        let response = completed_step_response(&session, &completed_step);
+
+        assert_eq!(response.session_id, session_id);
+        assert_eq!(response.status, STATUS_COMPLETED);
+        assert_eq!(response.dkg_status, STATUS_ROUND_1_IN_PROGRESS);
+        assert_eq!(
+            response.public_payload,
+            Some(json!({
+                "kind": "stored-round-result",
+                "node_id": "node-a",
+                "round": 1
+            }))
+        );
+    }
+
+    #[test]
+    fn completed_session_response_keeps_reloaded_master_public_key() {
+        let session_id = Uuid::new_v4();
+        let session = DkgSessionRow {
+            id: session_id,
+            status: STATUS_COMPLETED.to_string(),
+            master_public_key_base58: Some(MASTER_PUBLIC_KEY_PLACEHOLDER.to_string()),
+        };
+
+        let response = session_response_from_rows(session, all_completed_steps());
+
+        assert_eq!(response.session_id, session_id);
+        assert_eq!(response.status, STATUS_COMPLETED);
+        assert_eq!(
+            response.master_public_key_base58,
+            Some(MASTER_PUBLIC_KEY_PLACEHOLDER.to_string())
+        );
+        assert_eq!(response.node_steps.len(), 6);
+    }
+
+    fn step(node_id: &str, round: i32, status: &str) -> DkgStepRow {
+        DkgStepRow {
+            node_id: node_id.to_string(),
+            round,
+            status: status.to_string(),
+            public_payload: None,
+        }
+    }
+
+    fn all_completed_steps() -> Vec<DkgStepRow> {
+        NODE_IDS
+            .iter()
+            .flat_map(|node_id| {
+                DKG_ROUNDS
+                    .iter()
+                    .map(move |round| step(node_id, *round, STATUS_COMPLETED))
+            })
+            .collect()
     }
 }

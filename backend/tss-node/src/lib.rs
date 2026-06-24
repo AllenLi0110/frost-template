@@ -1,6 +1,12 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Path, State},
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::{error::Error, fmt, sync::Arc};
+use uuid::Uuid;
 
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8081;
@@ -73,6 +79,7 @@ impl Error for ConfigError {}
 #[derive(Clone)]
 struct AppState {
     config: Arc<NodeConfig>,
+    crypto_service: Arc<dyn DkgCryptoService>,
 }
 
 #[derive(Serialize)]
@@ -84,11 +91,55 @@ pub struct HealthResponse {
     coordinator_url: String,
 }
 
+#[derive(Serialize)]
+pub struct DkgRoundResponse {
+    session_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: &'static str,
+    public_payload: Value,
+}
+
+pub trait DkgCryptoService: Send + Sync + 'static {
+    fn run_dkg_round(&self, config: &NodeConfig, session_id: Uuid, round: i32) -> DkgRoundResponse;
+}
+
+#[derive(Clone)]
+pub struct PlaceholderDkgCryptoService;
+
+impl DkgCryptoService for PlaceholderDkgCryptoService {
+    fn run_dkg_round(&self, config: &NodeConfig, session_id: Uuid, round: i32) -> DkgRoundResponse {
+        DkgRoundResponse {
+            session_id,
+            node_id: config.node_id.clone(),
+            round,
+            status: "COMPLETED",
+            public_payload: json!({
+                "kind": "phase-2-placeholder-dkg-round",
+                "session_id": session_id,
+                "node_id": config.node_id.clone(),
+                "round": round
+            }),
+        }
+    }
+}
+
 pub fn router(config: NodeConfig) -> Router {
+    router_with_crypto_service(config, Arc::new(PlaceholderDkgCryptoService))
+}
+
+pub fn router_with_crypto_service(
+    config: NodeConfig,
+    crypto_service: Arc<dyn DkgCryptoService>,
+) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/internal/dkg/{session_id}/round1", post(dkg_round1))
+        .route("/internal/dkg/{session_id}/round2", post(dkg_round2))
+        .route("/internal/dkg/{session_id}/round3", post(dkg_round3))
         .with_state(AppState {
             config: Arc::new(config),
+            crypto_service,
         })
 }
 
@@ -108,6 +159,33 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         database_configured: !state.config.database_url.is_empty(),
         coordinator_url: state.config.coordinator_url.clone(),
     })
+}
+
+async fn dkg_round1(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Json<DkgRoundResponse> {
+    Json(run_dkg_round(state, session_id, 1))
+}
+
+async fn dkg_round2(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Json<DkgRoundResponse> {
+    Json(run_dkg_round(state, session_id, 2))
+}
+
+async fn dkg_round3(
+    State(state): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Json<DkgRoundResponse> {
+    Json(run_dkg_round(state, session_id, 3))
+}
+
+fn run_dkg_round(state: AppState, session_id: Uuid, round: i32) -> DkgRoundResponse {
+    state
+        .crypto_service
+        .run_dkg_round(&state.config, session_id, round)
 }
 
 fn required<F>(variable: &'static str, get: &F) -> Result<String, ConfigError>
@@ -171,5 +249,30 @@ mod tests {
             .expect_err("missing node id should fail");
 
         assert_eq!(error, ConfigError::MissingVariable("NODE_ID"));
+    }
+
+    #[test]
+    fn placeholder_dkg_round_response_exposes_only_public_payload() {
+        let config = NodeConfig {
+            node_id: "node-a".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8081,
+            database_url: "postgres://frost:frost@localhost:5432/frost".to_string(),
+            coordinator_url: "http://localhost:8080".to_string(),
+        };
+        let session_id = Uuid::new_v4();
+
+        let response = PlaceholderDkgCryptoService.run_dkg_round(&config, session_id, 1);
+        let encoded = serde_json::to_value(response).expect("response should serialize");
+
+        assert_eq!(encoded["status"], "COMPLETED");
+        assert_eq!(
+            encoded["public_payload"]["kind"],
+            "phase-2-placeholder-dkg-round"
+        );
+        assert!(encoded.get("root_share").is_none());
+        assert!(encoded.get("nonce_secret").is_none());
+        assert!(encoded["public_payload"].get("root_share").is_none());
+        assert!(encoded["public_payload"].get("nonce_secret").is_none());
     }
 }
