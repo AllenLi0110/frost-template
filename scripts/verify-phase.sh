@@ -891,7 +891,7 @@ check_phase_five_stack() {
   fi
 
   docker compose exec -T frontend node -e '
-async function fetchWithRetry(url, options = {}, attempts = 60) {
+async function fetchWithRetry(url, options = {}, attempts = 240) {
   let lastError;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {

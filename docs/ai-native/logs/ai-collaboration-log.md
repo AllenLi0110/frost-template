@@ -240,7 +240,7 @@ Important context provided:
 - Earlier phase history should be preserved instead of rewritten.
 
 AI output summary:
-- Expanded GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and Phase 5 integration verification.
+- Expanded GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and integration verification.
 - Added release metadata through `VERSION`, `CHANGELOG.md`, frontend package version, and backend workspace version.
 - Added release process documentation and a draft GitHub release workflow for matching `v*` tags.
 - Updated the PR template, roadmap, automation design, verification harness, and decision log.
@@ -272,6 +272,38 @@ Evidence links:
 
 Follow-up:
 - Configure GitHub branch protection for `main` so required checks must pass before merge.
+
+### 2026-06-25 - CI Readiness Fix
+
+Prompt summary:
+- The user reported that PR #6 CI did not pass after the branch protection work.
+
+Important context provided:
+- GitHub Actions had produced the required checks, but the integration job failed.
+
+AI output summary:
+- Inspected the GitHub Actions failure and found the integration harness hit `ECONNREFUSED` while waiting for Coordinator on a fresh runner.
+- Increased the Phase 5 initial health polling window from 60 seconds to 240 seconds.
+- Renamed the CI check from `Phase 5 integration verification` to `Integration verification` so Phase 6 and later phases can keep using the same required check.
+
+Human corrections:
+- None.
+
+Verification:
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 0`
+- Result: passed
+- Command: `git diff --check`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 5`
+- Result: passed
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `scripts/verify-phase.sh`, `docs/release-process.md`, `docs/ai-native/04-automation-design.md`
+
+Follow-up:
+- Update the GitHub ruleset required check from `Phase 5 integration verification` to `Integration verification` after the new CI run appears.
 
 ## Entry Template
 

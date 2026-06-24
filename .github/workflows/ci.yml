@@ -76,8 +76,8 @@ jobs:
         run: npm run build
         working-directory: frontend
 
-  phase-5-integration:
-    name: Phase 5 integration verification
+  integration:
+    name: Integration verification
     runs-on: ubuntu-latest
     needs:
       - repository-hygiene
@@ -99,7 +99,7 @@ jobs:
         run: npm ci
         working-directory: frontend
 
-      - name: Run Phase 5 verification harness
+      - name: Run latest phase verification harness
         run: ./scripts/verify-phase.sh 5
 
       - name: Stop containers

@@ -87,7 +87,7 @@ Every pull request must run CI on GitHub before merge. The required checks are:
 - `Repository hygiene and release metadata`
 - `Backend Rust tests`
 - `Frontend lint and build`
-- `Phase 5 integration verification`
+- `Integration verification`
 
 The repository owner should configure a GitHub branch rule for `main` that requires these checks and blocks direct pushes. Local verification is useful during development, but GitHub CI is the merge gate.
 

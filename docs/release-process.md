@@ -9,7 +9,7 @@ Every pull request must pass these GitHub Actions jobs before merge:
 - `Repository hygiene and release metadata`
 - `Backend Rust tests`
 - `Frontend lint and build`
-- `Phase 5 integration verification`
+- `Integration verification`
 
 Recommended GitHub branch rule for `main`:
 

@@ -51,6 +51,8 @@
 ## Failures And Retries
 
 - PR template patch was retried after the existing checklist wording differed from the expected text.
+- GitHub Actions initially failed the integration job because the fresh runner reached the Coordinator before the Rust service finished cold-starting; the Phase 5 initial health polling window was increased from 60 seconds to 240 seconds.
+- The integration status check was renamed from `Phase 5 integration verification` to `Integration verification` so later phases can reuse the same required check.
 
 ## Human Corrections
 

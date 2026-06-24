@@ -145,7 +145,7 @@ Why this phase exists:
 - Adding this now preserves the existing phase history while improving the engineering workflow for all remaining work.
 
 Scope:
-- Expand GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and Phase 5 integration verification.
+- Expand GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and integration verification.
 - Add version metadata with `VERSION`, `CHANGELOG.md`, package versions, and release docs.
 - Add a release workflow that creates a draft GitHub release from a matching `v*` tag.
 - Update PR and automation docs so CI passed status is required before merge.

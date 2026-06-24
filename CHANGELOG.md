@@ -11,7 +11,7 @@ All notable project changes are tracked here. Versions follow SemVer, with alpha
 - Observable DKG state machine with real `frost-ed25519` DKG integration.
 - Public wallet derivation from completed DKG public material.
 - Signing request state machine through nonce commitment and signature-share collection.
-- PR CI foundation for repository hygiene, backend tests, frontend lint/build, and Phase 5 integration verification.
+- PR CI foundation for repository hygiene, backend tests, frontend lint/build, and integration verification.
 - Version metadata foundation using `VERSION`, package metadata, changelog entries, and draft GitHub releases.
 
 ### Security
