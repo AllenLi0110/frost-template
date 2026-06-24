@@ -136,6 +136,26 @@ Definition of done:
 Suggested prompt:
 - `prompts/05-signing-state-machine.md`
 
+## Phase 5.5: CI And Versioning Foundation
+
+Goal: Turn the local verification harness into a GitHub PR gate and introduce release version checkpoints before Phase 6.
+
+Why this phase exists:
+- By Phase 5, the project had meaningful backend, frontend, Docker, and protocol verification, but GitHub PRs were not yet protected by complete CI.
+- Adding this now preserves the existing phase history while improving the engineering workflow for all remaining work.
+
+Scope:
+- Expand GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and integration verification.
+- Add version metadata with `VERSION`, `CHANGELOG.md`, package versions, and release docs.
+- Add a release workflow that creates a draft GitHub release from a matching `v*` tag.
+- Update PR and automation docs so CI passed status is required before merge.
+
+Definition of done:
+- `./scripts/verify-phase.sh 0` verifies release metadata.
+- GitHub CI runs automatically on pull requests.
+- `main` can be protected with required status checks.
+- Future phases use version/changelog impact as part of PR review.
+
 ## Phase 6: Aggregation, Solana Broadcast, Confirmation
 
 Goal: Aggregate FROST signature shares, build Solana transfer transactions, broadcast to Devnet, and confirm.

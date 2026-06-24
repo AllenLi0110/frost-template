@@ -80,6 +80,19 @@ Human approval is required before:
 - Changing cryptographic boundaries.
 - Changing private-key or nonce handling.
 
+## CI And Release Gates
+
+Every pull request must run CI on GitHub before merge. The required checks are:
+
+- `Repository hygiene and release metadata`
+- `Backend Rust tests`
+- `Frontend lint and build`
+- `Integration verification`
+
+The repository owner should configure a GitHub branch rule for `main` that requires these checks and blocks direct pushes. Local verification is useful during development, but GitHub CI is the merge gate.
+
+Version checkpoints are managed with `VERSION`, `CHANGELOG.md`, and Git tags. A release tag must match `v$(cat VERSION)`. Pushing a matching tag starts the release workflow and creates a draft GitHub release for human approval.
+
 ## Trace Requirements
 
 Each agent run should record:
@@ -115,6 +128,7 @@ Agents must not:
 - Add one-click DKG or signing shortcuts.
 - Push directly to `main` after the automation branch workflow is active.
 - Merge their own PRs.
+- Publish a release without a matching changelog entry and human approval.
 
 ## Recommended Phase 1 Automation
 

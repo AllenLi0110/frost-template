@@ -11,6 +11,7 @@ Run for documentation-only changes:
 ```bash
 ! grep -RInE "/Users/[[:alnum:]_.-]+/|([A-Z0-9_]*(SECRET|PRIVATE_KEY|API_KEY)[A-Z0-9_]*[[:space:]]*[:=])" docs features .github scripts
 git diff --check
+node scripts/verify-release-metadata.mjs
 ```
 
 ## Phase 0: AI-Native Bootstrap
@@ -27,7 +28,11 @@ test -f docs/ai-native/00-agent-context.md
 test -f docs/ai-native/01-implementation-roadmap.md
 test -f docs/ai-native/03-loop-engineering.md
 test -f docs/ai-native/04-automation-design.md
+test -f VERSION
+test -f CHANGELOG.md
+test -f docs/release-process.md
 test -f scripts/verify-phase.sh
+node scripts/verify-release-metadata.mjs
 ```
 
 ## Phase 1: Project Foundation
@@ -110,13 +115,74 @@ The script verifies:
 - Coordinator API responses do not contain root shares.
 - Completed FROST DKG session survives coordinator and node restart.
 
+## Phase 4: Wallet Derivation
+
+Purpose:
+- Confirm wallet derivation is deterministic, persisted, and does not require private material in Coordinator.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 4
+```
+
+The script verifies:
+
+- Completed DKG gating before wallet creation.
+- Sequential wallet indexes.
+- Public Solana address derivation.
+- Balance refresh status handling.
+- Restart persistence.
+- Frontend wallet rendering.
+
+## Phase 5: Signing Request State Machine
+
+Purpose:
+- Confirm transfer intents and signing rounds can be orchestrated without exposing node-local secrets.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 5
+```
+
+The script verifies:
+
+- Backend workspace tests.
+- Frontend lint and production build.
+- Full Docker Compose startup.
+- DKG and wallet setup prerequisites.
+- Signing request creation and listing.
+- Round 1 commitment replay behavior.
+- Round 2 gating and nonce single-use protection.
+- Failure propagation from node step to parent signing request.
+- Frontend signing panel rendering.
+
+## CI And Versioning Foundation
+
+Purpose:
+- Confirm GitHub PR checks and release metadata are wired before later phases continue.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 0
+```
+
+The script verifies:
+
+- Existing Phase 0 AI-native files.
+- CI and release workflow files.
+- Root `VERSION`.
+- `CHANGELOG.md` contains a dated entry for the current version.
+- Frontend package metadata matches `VERSION`.
+- Backend workspace package metadata matches `VERSION`.
+- `docs/release-process.md` exists.
+
 ## Later Phases
 
 Later phases must add checks for:
 
-- Deterministic wallet derivation.
-- Signing request state transitions.
-- Nonce single-use protection.
 - Signature aggregation.
 - Solana Devnet broadcast and confirmation.
 - Frontend workflow coverage.

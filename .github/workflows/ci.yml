@@ -5,22 +5,54 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  phase-0-docs:
-    name: Phase 0 docs and repository hygiene
+  repository-hygiene:
+    name: Repository hygiene and release metadata
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Check repository hygiene
         run: ./scripts/verify-phase.sh 0
 
-  frontend-static:
-    name: Frontend static checks
+  backend-tests:
+    name: Backend Rust tests
     runs-on: ubuntu-latest
-    if: hashFiles('frontend/package.json') != ''
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config >/dev/null
+
+      - name: Run backend tests
+        run: docker compose run --rm --no-deps coordinator cargo test --workspace
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v
+
+  frontend-static:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,3 +71,37 @@ jobs:
       - name: Lint frontend
         run: npm run lint
         working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+  integration:
+    name: Integration verification
+    runs-on: ubuntu-latest
+    needs:
+      - repository-hygiene
+      - backend-tests
+      - frontend-static
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run latest phase verification harness
+        run: ./scripts/verify-phase.sh 5
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v

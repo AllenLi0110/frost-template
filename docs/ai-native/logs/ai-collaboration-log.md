@@ -229,6 +229,82 @@ Evidence links:
 Follow-up:
 - Phase 5 should add transfer preparation and threshold signing while keeping child private material node-local.
 
+### 2026-06-24 - CI And Versioning Foundation
+
+Prompt summary:
+- After Phase 5, the user noticed that pull requests were not automatically enforcing full frontend/backend CI and asked to add proper CI/CD and version management.
+
+Important context provided:
+- The project already had local phase verification scripts.
+- The user wanted GitHub PRs to run tests before merge and wanted release/version checkpoints.
+- Earlier phase history should be preserved instead of rewritten.
+
+AI output summary:
+- Expanded GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and integration verification.
+- Added release metadata through `VERSION`, `CHANGELOG.md`, frontend package version, and backend workspace version.
+- Added release process documentation and a draft GitHub release workflow for matching `v*` tags.
+- Updated the PR template, roadmap, automation design, verification harness, and decision log.
+
+Human corrections:
+- None yet.
+
+Verification:
+- Command: `node scripts/verify-release-metadata.mjs`
+- Result: passed
+- Command: `node scripts/extract-release-notes.mjs v0.1.1`
+- Result: passed
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 0`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 5`
+- Result: passed
+- Note: GitHub CI will run after the branch is pushed and the PR is opened.
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `VERSION`, `CHANGELOG.md`, `docs/release-process.md`, `scripts/verify-release-metadata.mjs`, `scripts/extract-release-notes.mjs`
+
+Follow-up:
+- Configure GitHub branch protection for `main` so required checks must pass before merge.
+
+### 2026-06-25 - CI Readiness Fix
+
+Prompt summary:
+- The user reported that PR #6 CI did not pass after the branch protection work.
+
+Important context provided:
+- GitHub Actions had produced the required checks, but the integration job failed.
+
+AI output summary:
+- Inspected the GitHub Actions failure and found the integration harness hit `ECONNREFUSED` while waiting for Coordinator on a fresh runner.
+- Increased the Phase 5 initial health polling window from 60 seconds to 240 seconds.
+- Renamed the CI check from `Phase 5 integration verification` to `Integration verification` so Phase 6 and later phases can keep using the same required check.
+
+Human corrections:
+- None.
+
+Verification:
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 0`
+- Result: passed
+- Command: `git diff --check`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 5`
+- Result: passed
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `scripts/verify-phase.sh`, `docs/release-process.md`, `docs/ai-native/04-automation-design.md`
+
+Follow-up:
+- Update the GitHub ruleset required check from `Phase 5 integration verification` to `Integration verification` after the new CI run appears.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name
