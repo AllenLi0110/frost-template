@@ -534,7 +534,7 @@ h3 {
 
 .request-facts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   margin: 0;
 }
@@ -570,6 +570,50 @@ h3 {
 
 .signing-round-cell {
   min-height: 150px;
+}
+
+.broadcast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #fbfcfc;
+  padding: 14px;
+}
+
+.broadcast-actions .primary-button,
+.broadcast-actions .secondary-button {
+  width: auto;
+}
+
+.explorer-link {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--teal-strong);
+  font-weight: 800;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.explorer-link:hover {
+  border-color: var(--teal);
+}
+
+.request-error {
+  margin: 0;
+  border: 1px solid #efb5a8;
+  border-radius: 8px;
+  background: #fff4f0;
+  color: var(--coral);
+  line-height: 1.5;
+  padding: 12px;
+  overflow-wrap: break-word;
 }
 
 @media (max-width: 900px) {
@@ -645,9 +689,15 @@ h3 {
   }
 
   .transfer-form,
-  .request-facts,
   .signing-round-grid {
     grid-template-columns: 1fr;
+  }
+
+  .broadcast-actions .primary-button,
+  .broadcast-actions .secondary-button,
+  .explorer-link {
+    justify-content: center;
+    width: 100%;
   }
 
   .wallet-row {

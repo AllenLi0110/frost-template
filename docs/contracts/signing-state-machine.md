@@ -1,6 +1,7 @@
 # Signing State Machine Contract
 
-Phase 5 adds a manual signing request workflow up to `READY_TO_AGGREGATE`. It does not aggregate signatures, build a Solana transaction, broadcast, or confirm a transfer.
+Phase 5 adds a manual signing request workflow up to `READY_TO_AGGREGATE`.
+Phase 6 extends the same workflow with FROST aggregation, Solana Devnet broadcast, and confirmation refresh.
 
 ## Boundary
 
@@ -9,24 +10,31 @@ Frontend:
 - Creates transfer intents.
 - Lists signing requests.
 - Manually triggers Node A and Node B Signing Round 1 and Round 2.
-- Must not provide a one-click sign-and-send action.
+- Manually triggers aggregate/broadcast after both signature shares exist.
+- Manually refreshes confirmation after broadcast.
+- Must not provide a one-click sign-and-send action that hides signing rounds.
 
 Coordinator:
 - Owns public signing APIs and state transitions.
-- Stores transfer intent metadata, public node step payloads, public nonce commitments, and signature shares.
+- Stores transfer intent metadata, public node step payloads, public nonce commitments, signature shares, transaction signature, and Explorer URL.
+- Fetches a fresh recent blockhash before Round 2 signing.
+- Builds the exact Solana transfer message that TSS nodes sign.
+- Aggregates FROST signature shares and broadcasts the signed transaction.
+- Marks a request `CONFIRMED` only after Solana reports `confirmed` or `finalized`.
 - Does not store nonce secrets, root shares, child shares, or node key packages.
 
 TSS Node:
 - Owns node-local key material and nonce state.
 - Generates a single-use FROST signing nonce in Round 1.
 - Uses and consumes that nonce in Round 2.
-- Returns only public nonce commitments and signature share payloads.
+- Derives child signing shares in memory from the node-local root share and `wallet_index`.
+- Returns only public nonce commitments, child verifying material, and signature share payloads.
 
-## Phase 5 Crypto Scope
+## Crypto Scope
 
-Round 1 and Round 2 use the completed FROST root key package to produce real FROST signing commitments and signature shares over a canonical transfer-intent message.
+Round 1 and Round 2 use the completed FROST root key package as node-local input, derive the selected child wallet share in memory, and produce real FROST signing commitments and signature shares over the serialized Solana transfer message.
 
-Derived child-share signing and Solana transaction aggregation remain Phase 6 work. Phase 5 still binds every request to `wallet_index`, sender address, recipient address, amount, and message hash so the orchestration boundary is ready for the Phase 6 replacement.
+Coordinator never receives child private shares. It receives public child verifying shares and the child verifying key so it can aggregate and verify the final Ed25519 signature against the transaction signer.
 
 ## Public Coordinator APIs
 
@@ -60,6 +68,10 @@ Response:
   "amount_lamports": 1000,
   "status": "PENDING",
   "message_hash_hex": null,
+  "recent_blockhash": null,
+  "transaction_signature": null,
+  "explorer_url": null,
+  "error_message": null,
   "created_at": "2026-06-24 12:00:00+00",
   "updated_at": "2026-06-24 12:00:00+00",
   "node_steps": [
@@ -89,6 +101,10 @@ Response:
       "amount_lamports": 1000,
       "status": "PENDING",
       "message_hash_hex": null,
+      "recent_blockhash": null,
+      "transaction_signature": null,
+      "explorer_url": null,
+      "error_message": null,
       "created_at": "2026-06-24 12:00:00+00",
       "updated_at": "2026-06-24 12:00:00+00",
       "node_steps": []
@@ -124,6 +140,9 @@ Round 1 response:
     "package_format": "frost-ed25519-2.2.0-hex",
     "node_id": "node-a",
     "round": 1,
+    "commitment_scope": "child-wallet-solana-transfer",
+    "child_verifying_share_hex": "...",
+    "child_verifying_key_hex": "...",
     "commitments_hex": "..."
   }
 }
@@ -143,11 +162,44 @@ Round 2 response:
     "package_format": "frost-ed25519-2.2.0-hex",
     "node_id": "node-a",
     "round": 2,
+    "signature_scope": "child-wallet-solana-transfer",
     "message_hash_hex": "...",
+    "child_verifying_share_hex": "...",
+    "child_verifying_key_hex": "...",
     "signature_share_hex": "..."
   }
 }
 ```
+
+### `POST /api/signing-requests/{request_id}/broadcast`
+
+Rules:
+- Request status must be `READY_TO_AGGREGATE`.
+- Both Round 2 signature shares must exist.
+- Stored message payload must use `frost-template-solana-transfer-message-v1`.
+- Aggregated signature must verify against the child wallet signer.
+- RPC failures mark the request `FAILED` with a public error message.
+- Expired blockhash errors tell the user to create a new signing request.
+
+Response uses the normal signing request shape with:
+
+```json
+{
+  "status": "BROADCASTED",
+  "transaction_signature": "...",
+  "explorer_url": "https://explorer.solana.com/tx/...?cluster=devnet"
+}
+```
+
+### `POST /api/signing-requests/{request_id}/confirm`
+
+Rules:
+- Request status must be `BROADCASTED`.
+- `CONFIRMED` is set only when Solana returns `confirmed` or `finalized`.
+- A Solana transaction error marks the request `FAILED`.
+- An unconfirmed transaction remains `BROADCASTED`.
+
+Response uses the normal signing request shape.
 
 ## Internal TSS Node APIs
 
@@ -164,8 +216,10 @@ Round 2 request includes all public Round 1 commitments:
   "recipient_address_base58": "11111111111111111111111111111111",
   "amount_lamports": 1000,
   "message_payload": {
-    "format": "frost-template-transfer-intent-v1",
-    "canonical_message": "..."
+    "format": "frost-template-solana-transfer-message-v1",
+    "signature_scope": "child-wallet-solana-transfer",
+    "recent_blockhash": "...",
+    "transaction_message_hex": "..."
   },
   "message_hash_hex": "...",
   "signing_commitments": {
@@ -185,6 +239,8 @@ COMMITMENTS_IN_PROGRESS
 COMMITMENTS_READY
 SHARES_IN_PROGRESS
 READY_TO_AGGREGATE
+BROADCASTED
+CONFIRMED
 FAILED
 EXPIRED
 ```
@@ -210,3 +266,8 @@ Coordinator tables must not include these field names in public payloads:
 - `signing_nonces_ciphertext`
 
 Node tables may store encrypted nonce state, but never plaintext nonce material.
+
+## Verification Notes
+
+- CI may use `SOLANA_RPC_URL=mock://phase6` for deterministic broadcast and confirmation checks without requiring Devnet funds.
+- Manual Devnet verification still requires funding the derived sender wallet before broadcast.

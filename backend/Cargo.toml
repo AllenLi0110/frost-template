@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.1.1"
+version = "0.1.2"
 
 [workspace.dependencies]
 tokio = { version = "1.47.1", features = ["full"] }
@@ -13,10 +13,14 @@ snafu = "0.8.7"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "json"] }
 solana-client = "3.1.8"
 solana-sdk = "3.0.0"
+solana-system-interface = { version = "2.0.0", features = ["bincode"] }
 frost-ed25519 = "2.1.0"
+frost-core = { version = "2.2.0", features = ["cheater-detection", "internals"] }
 generic-ec = { version = "0.4.5", features = ["curve-ed25519"] }
 hd-wallet = { version = "0.6.1", features = ["edwards", "curve-ed25519"] }
 aes-gcm-siv = "0.11.1"
+base64 = "0.22.1"
+bincode = "1.3.3"
 bs58 = "0.5.1"
 hex = "0.4.3"
 serde = { version = "1.0.219", features = ["derive"] }

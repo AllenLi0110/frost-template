@@ -305,6 +305,41 @@ Evidence links:
 Follow-up:
 - Update the GitHub ruleset required check from `Phase 5 integration verification` to `Integration verification` after the new CI run appears.
 
+### 2026-06-25 - Phase 6 Broadcast And Confirmation
+
+Prompt summary:
+- The user asked to start Phase 6 after merging the CI/versioning foundation.
+
+Important context provided:
+- Phase 6 must aggregate FROST signature shares, broadcast a Solana Devnet transfer, and confirm it.
+- Phase 5 signed a transfer intent, so Phase 6 needed to avoid broadcasting a signature that did not match the transaction signer.
+
+AI output summary:
+- Changed Round 2 signing to use the exact serialized Solana transfer message.
+- Implemented node-local child-share signing for the selected wallet index.
+- Added Coordinator broadcast and confirmation endpoints.
+- Added transaction signature and Explorer URL display in the frontend.
+- Added a CI-safe Phase 6 integration harness using mock Solana RPC.
+
+Human corrections:
+- None yet.
+
+Verification:
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 6`
+- Result: passed
+
+Evidence links:
+- Files: `backend/coordinator/src/lib.rs`, `backend/tss-node/src/lib.rs`, `frontend/app/page.tsx`, `frontend/app/globals.css`, `docs/contracts/signing-state-machine.md`, `scripts/verify-phase.sh`, `docs/ai-native/logs/phase-6-agent-run-report.md`
+
+Follow-up:
+- Record manual Devnet verification after funding a derived wallet and broadcasting a real transfer.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

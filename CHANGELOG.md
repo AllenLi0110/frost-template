@@ -2,6 +2,19 @@
 
 All notable project changes are tracked here. Versions follow numeric SemVer patch increments.
 
+## [0.1.2] - 2026-06-25
+
+### Added
+
+- Phase 6 child-wallet FROST signing over serialized Solana transfer messages.
+- Coordinator signature aggregation, Solana broadcast, confirmation refresh, and Explorer URL storage.
+- Frontend aggregate/broadcast and confirmation controls.
+- CI-safe Phase 6 integration verification with mock Solana RPC.
+
+### Security
+
+- Private root shares, child shares, and nonce secrets remain node-local.
+
 ## [0.1.1] - 2026-06-24
 
 ### Added

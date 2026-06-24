@@ -10,6 +10,8 @@ use axum::{
     Json, Router,
 };
 use frost_ed25519 as frost;
+use generic_ec::{curves::Ed25519, Point};
+use hd_wallet::{edwards, ExtendedPublicKey, NonHardenedIndex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -39,7 +41,9 @@ const NODE_DKG_STATUS_COMPLETED: &str = "COMPLETED";
 const NODE_SIGNING_STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
 const NODE_SIGNING_STATUS_ROUND_2_IN_PROGRESS: &str = "ROUND_2_IN_PROGRESS";
 const NODE_SIGNING_STATUS_ROUND_2_COMPLETE: &str = "ROUND_2_COMPLETE";
-const SIGNING_MESSAGE_FORMAT: &str = "frost-template-transfer-intent-v1";
+const PUBLIC_DERIVATION_CONTEXT_DOMAIN: &str = "frost-template-public-derivation-context-v1";
+const SIGNING_MESSAGE_FORMAT: &str = "frost-template-solana-transfer-message-v1";
+const SIGNING_SCOPE: &str = "child-wallet-solana-transfer";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeConfig {
@@ -163,6 +167,12 @@ pub struct SigningRoundResponse {
     round: i32,
     status: &'static str,
     public_payload: Value,
+}
+
+struct ChildSigningKeyPackage {
+    key_package: frost::keys::KeyPackage,
+    verifying_share_hex: String,
+    verifying_key_hex: String,
 }
 
 #[derive(Debug)]
@@ -547,11 +557,16 @@ async fn run_frost_signing_round1(
         }
     }
 
-    let key_package =
+    let root_key_package =
         load_completed_key_package(pool, schema, &state.config, request.dkg_session_id).await?;
+    let child_key_package = derive_child_signing_key_package(
+        &root_key_package,
+        request.wallet_index,
+        &request.sender_address_base58,
+    )?;
     let mut rng = OsRng;
     let (signing_nonces, signing_commitments) =
-        frost::round1::commit(key_package.signing_share(), &mut rng);
+        frost::round1::commit(child_key_package.key_package.signing_share(), &mut rng);
     let signing_nonces_ciphertext =
         seal_bytes(&state.config, &signing_nonces.serialize().map_err(crypto_error)?)?;
     let commitments_hex = hex::encode(signing_commitments.serialize().map_err(crypto_error)?);
@@ -560,6 +575,8 @@ async fn run_frost_signing_round1(
         request_id,
         request.wallet_index,
         commitments_hex,
+        child_key_package.verifying_share_hex,
+        child_key_package.verifying_key_hex,
     );
 
     upsert_signing_round1_state(
@@ -610,14 +627,20 @@ async fn run_frost_signing_round2(
     let signing_nonces_bytes = open_bytes(&state.config, &signing_nonces_ciphertext)?;
     let signing_nonces =
         frost::round1::SigningNonces::deserialize(&signing_nonces_bytes).map_err(crypto_error)?;
-    let key_package =
+    let root_key_package =
         load_completed_key_package(pool, schema, &state.config, request.dkg_session_id).await?;
+    let child_key_package = derive_child_signing_key_package(
+        &root_key_package,
+        request.wallet_index,
+        &request.sender_address_base58,
+    )?;
     let message_bytes = signing_message_bytes(&request)?;
     let commitments = decode_signing_commitments(&request.signing_commitments, &state.config.node_id)?;
     claim_signing_nonce_for_round2(pool, schema, request_id, &request.message_hash_hex).await?;
     let signing_package = frost::SigningPackage::new(commitments, &message_bytes);
     let signature_share =
-        frost::round2::sign(&signing_package, &signing_nonces, &key_package).map_err(crypto_error)?;
+        frost::round2::sign(&signing_package, &signing_nonces, &child_key_package.key_package)
+            .map_err(crypto_error)?;
     let signature_share_hex = hex::encode(signature_share.serialize());
 
     store_signing_round2_share(pool, schema, request_id, &signature_share_hex).await?;
@@ -628,6 +651,8 @@ async fn run_frost_signing_round2(
         request.wallet_index,
         request.message_hash_hex,
         signature_share_hex,
+        child_key_package.verifying_share_hex,
+        child_key_package.verifying_key_hex,
     ))
 }
 
@@ -708,7 +733,14 @@ fn signing_round1_response(
         round: 1,
         status: STATUS_COMPLETED,
         public_payload: if public_payload.is_null() {
-            signing_round1_payload(config, request_id, wallet_index, String::new())
+            signing_round1_payload(
+                config,
+                request_id,
+                wallet_index,
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         } else {
             public_payload
         },
@@ -720,6 +752,8 @@ fn signing_round1_payload(
     request_id: Uuid,
     wallet_index: i32,
     commitments_hex: String,
+    child_verifying_share_hex: String,
+    child_verifying_key_hex: String,
 ) -> Value {
     json!({
         "kind": "frost-signing-round1",
@@ -728,7 +762,9 @@ fn signing_round1_payload(
         "node_id": config.node_id.clone(),
         "round": 1,
         "wallet_index": wallet_index,
-        "commitment_scope": "root-key-package-transfer-intent",
+        "commitment_scope": SIGNING_SCOPE,
+        "child_verifying_share_hex": child_verifying_share_hex,
+        "child_verifying_key_hex": child_verifying_key_hex,
         "commitments_hex": commitments_hex
     })
 }
@@ -739,6 +775,8 @@ fn signing_round2_response(
     wallet_index: i32,
     message_hash_hex: String,
     signature_share_hex: String,
+    child_verifying_share_hex: String,
+    child_verifying_key_hex: String,
 ) -> SigningRoundResponse {
     SigningRoundResponse {
         request_id,
@@ -752,8 +790,10 @@ fn signing_round2_response(
             "node_id": config.node_id.clone(),
             "round": 2,
             "wallet_index": wallet_index,
-            "signature_scope": "root-key-package-transfer-intent",
+            "signature_scope": SIGNING_SCOPE,
             "message_hash_hex": message_hash_hex,
+            "child_verifying_share_hex": child_verifying_share_hex,
+            "child_verifying_key_hex": child_verifying_key_hex,
             "signature_share_hex": signature_share_hex
         }),
     }
@@ -1172,26 +1212,101 @@ fn signing_message_bytes(request: &SigningRoundRequest) -> Result<Vec<u8>, NodeD
         ));
     }
 
-    let canonical_message = request
+    let transaction_message_hex = request
         .message_payload
-        .get("canonical_message")
+        .get("transaction_message_hex")
         .and_then(Value::as_str)
         .ok_or_else(|| {
             NodeDkgError::InvalidRequest(
-                "signing message payload is missing canonical_message".to_string(),
+                "signing message payload is missing transaction_message_hex".to_string(),
             )
         })?;
+    let message_bytes = decode_hex_field("transaction message", transaction_message_hex)?;
     let mut hasher = Sha256::new();
-    hasher.update(canonical_message.as_bytes());
+    hasher.update(&message_bytes);
     let computed_hash = hex::encode(hasher.finalize());
 
     if computed_hash != request.message_hash_hex {
         return Err(NodeDkgError::InvalidRequest(
-            "signing message hash does not match canonical_message".to_string(),
+            "signing message hash does not match transaction_message_hex".to_string(),
         ));
     }
 
-    Ok(canonical_message.as_bytes().to_vec())
+    Ok(message_bytes)
+}
+
+fn derive_child_signing_key_package(
+    root_key_package: &frost::keys::KeyPackage,
+    wallet_index: i32,
+    expected_sender_address_base58: &str,
+) -> Result<ChildSigningKeyPackage, NodeDkgError> {
+    if wallet_index < 0 {
+        return Err(NodeDkgError::InvalidRequest(
+            "wallet_index must be non-negative".to_string(),
+        ));
+    }
+
+    let root_verifying_key_bytes = root_key_package
+        .verifying_key()
+        .serialize()
+        .map_err(crypto_error)?;
+    let root_verifying_key_base58 = bs58::encode(&root_verifying_key_bytes).into_string();
+    let parent_public_key = Point::<Ed25519>::from_bytes(&root_verifying_key_bytes).map_err(|_| {
+        NodeDkgError::Crypto("root verifying key is not a valid Ed25519 point".to_string())
+    })?;
+    let extended_public_key = ExtendedPublicKey::<Ed25519> {
+        public_key: parent_public_key,
+        chain_code: public_derivation_chain_code(&root_verifying_key_base58),
+    };
+    let child_index = NonHardenedIndex::try_from(wallet_index as u32)
+        .map_err(|_| NodeDkgError::InvalidRequest("wallet_index is too large".to_string()))?;
+    let derived_shift = edwards::derive_public_shift(&extended_public_key, child_index);
+    let child_public_key_bytes = derived_shift.child_public_key.public_key.to_bytes(true);
+    let child_address_base58 = bs58::encode(child_public_key_bytes.as_bytes()).into_string();
+
+    if child_address_base58 != expected_sender_address_base58 {
+        return Err(NodeDkgError::InvalidRequest(
+            "sender_address_base58 does not match derived wallet index".to_string(),
+        ));
+    }
+
+    let shift_bytes: [u8; 32] = derived_shift
+        .shift
+        .to_le_bytes()
+        .as_ref()
+        .try_into()
+        .map_err(|_| NodeDkgError::Crypto("child derivation shift must be 32 bytes".to_string()))?;
+    let shift_scalar =
+        <frost::Ed25519ScalarField as frost::Field>::deserialize(&shift_bytes)
+            .map_err(crypto_error)?;
+    let child_signing_share =
+        frost::keys::SigningShare::new(root_key_package.signing_share().to_scalar() + shift_scalar);
+    let child_verifying_share = frost::keys::VerifyingShare::from(child_signing_share);
+    let child_verifying_key =
+        frost::VerifyingKey::deserialize(child_public_key_bytes.as_bytes()).map_err(crypto_error)?;
+    let verifying_share_hex =
+        hex::encode(child_verifying_share.serialize().map_err(crypto_error)?);
+    let verifying_key_hex = hex::encode(child_verifying_key.serialize().map_err(crypto_error)?);
+    let key_package = frost::keys::KeyPackage::new(
+        *root_key_package.identifier(),
+        child_signing_share,
+        child_verifying_share,
+        child_verifying_key,
+        *root_key_package.min_signers(),
+    );
+
+    Ok(ChildSigningKeyPackage {
+        key_package,
+        verifying_share_hex,
+        verifying_key_hex,
+    })
+}
+
+fn public_derivation_chain_code(root_verifying_key_base58: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(PUBLIC_DERIVATION_CONTEXT_DOMAIN.as_bytes());
+    hasher.update(root_verifying_key_base58.as_bytes());
+    hasher.finalize().into()
 }
 
 fn decode_hex_field(field: &str, value: &str) -> Result<Vec<u8>, NodeDkgError> {
@@ -1462,6 +1577,115 @@ mod tests {
     }
 
     #[test]
+    fn child_wallet_signature_verifies_against_derived_sender() {
+        let mut rng = OsRng;
+        let node_a_identifier = node_identifier("node-a").expect("node a id should exist");
+        let node_b_identifier = node_identifier("node-b").expect("node b id should exist");
+
+        let (node_a_round1_secret, node_a_round1_package) = frost::keys::dkg::part1(
+            node_a_identifier,
+            MAX_SIGNERS,
+            MIN_SIGNERS,
+            &mut rng,
+        )
+        .expect("node a round 1 should work");
+        let (node_b_round1_secret, node_b_round1_package) = frost::keys::dkg::part1(
+            node_b_identifier,
+            MAX_SIGNERS,
+            MIN_SIGNERS,
+            &mut rng,
+        )
+        .expect("node b round 1 should work");
+
+        let node_a_peer_round1 =
+            BTreeMap::from([(node_b_identifier, node_b_round1_package.clone())]);
+        let node_b_peer_round1 =
+            BTreeMap::from([(node_a_identifier, node_a_round1_package.clone())]);
+        let (node_a_round2_secret, node_a_round2_packages) =
+            frost::keys::dkg::part2(node_a_round1_secret, &node_a_peer_round1)
+                .expect("node a round 2 should work");
+        let (node_b_round2_secret, node_b_round2_packages) =
+            frost::keys::dkg::part2(node_b_round1_secret, &node_b_peer_round1)
+                .expect("node b round 2 should work");
+        let node_a_peer_round2 = BTreeMap::from([(
+            node_b_identifier,
+            node_b_round2_packages
+                .get(&node_a_identifier)
+                .expect("node b should emit package for node a")
+                .clone(),
+        )]);
+        let node_b_peer_round2 = BTreeMap::from([(
+            node_a_identifier,
+            node_a_round2_packages
+                .get(&node_b_identifier)
+                .expect("node a should emit package for node b")
+                .clone(),
+        )]);
+        let (node_a_key_package, node_a_public_key_package) = frost::keys::dkg::part3(
+            &node_a_round2_secret,
+            &node_a_peer_round1,
+            &node_a_peer_round2,
+        )
+        .expect("node a round 3 should work");
+        let (node_b_key_package, _) = frost::keys::dkg::part3(
+            &node_b_round2_secret,
+            &node_b_peer_round1,
+            &node_b_peer_round2,
+        )
+        .expect("node b round 3 should work");
+
+        let master_public_key = master_public_key_base58(&node_a_public_key_package)
+            .expect("master public key should encode");
+        let expected_sender = expected_child_address(&master_public_key, 0);
+        assert_ne!(expected_sender, master_public_key);
+
+        let child_a = derive_child_signing_key_package(&node_a_key_package, 0, &expected_sender)
+            .expect("node a child share should derive");
+        let child_b = derive_child_signing_key_package(&node_b_key_package, 0, &expected_sender)
+            .expect("node b child share should derive");
+        let (nonces_a, commitments_a) =
+            frost::round1::commit(child_a.key_package.signing_share(), &mut rng);
+        let (nonces_b, commitments_b) =
+            frost::round1::commit(child_b.key_package.signing_share(), &mut rng);
+        let signing_package = frost::SigningPackage::new(
+            BTreeMap::from([
+                (node_a_identifier, commitments_a),
+                (node_b_identifier, commitments_b),
+            ]),
+            b"serialized-solana-transfer-message",
+        );
+        let share_a = frost::round2::sign(&signing_package, &nonces_a, &child_a.key_package)
+            .expect("node a should sign");
+        let share_b = frost::round2::sign(&signing_package, &nonces_b, &child_b.key_package)
+            .expect("node b should sign");
+        let public_key_package = frost::keys::PublicKeyPackage::new(
+            BTreeMap::from([
+                (
+                    node_a_identifier,
+                    *child_a.key_package.verifying_share(),
+                ),
+                (
+                    node_b_identifier,
+                    *child_b.key_package.verifying_share(),
+                ),
+            ]),
+            *child_a.key_package.verifying_key(),
+        );
+        let signature = frost::aggregate(
+            &signing_package,
+            &BTreeMap::from([(node_a_identifier, share_a), (node_b_identifier, share_b)]),
+            &public_key_package,
+        )
+        .expect("child shares should aggregate");
+
+        child_a
+            .key_package
+            .verifying_key()
+            .verify(b"serialized-solana-transfer-message", &signature)
+            .expect("aggregate signature should verify against child signer");
+    }
+
+    #[test]
     fn node_material_encryption_round_trips_without_plaintext() {
         let config = test_config("node-a");
         let plaintext = b"private-root-material";
@@ -1503,10 +1727,10 @@ mod tests {
     }
 
     #[test]
-    fn signing_message_hash_must_match_canonical_message() {
-        let canonical_message = "frost-template-transfer-intent-v1\nrequest_id=test";
+    fn signing_message_hash_must_match_transaction_message() {
+        let transaction_message = b"serialized-solana-transfer-message";
         let mut hasher = Sha256::new();
-        hasher.update(canonical_message.as_bytes());
+        hasher.update(transaction_message);
         let message_hash_hex = hex::encode(hasher.finalize());
         let request = SigningRoundRequest {
             dkg_session_id: Uuid::new_v4(),
@@ -1516,7 +1740,7 @@ mod tests {
             amount_lamports: 1,
             message_payload: json!({
                 "format": SIGNING_MESSAGE_FORMAT,
-                "canonical_message": canonical_message
+                "transaction_message_hex": hex::encode(transaction_message)
             }),
             message_hash_hex,
             signing_commitments: BTreeMap::new(),
@@ -1525,7 +1749,7 @@ mod tests {
         let message_bytes =
             signing_message_bytes(&request).expect("matching hash should validate");
 
-        assert_eq!(message_bytes, canonical_message.as_bytes());
+        assert_eq!(message_bytes, transaction_message);
 
         let tampered = SigningRoundRequest {
             message_hash_hex: "00".repeat(32),
@@ -1546,7 +1770,14 @@ mod tests {
                 &config,
                 request_id,
                 0,
-                signing_round1_payload(&config, request_id, 0, "commitment".to_string()),
+                signing_round1_payload(
+                    &config,
+                    request_id,
+                    0,
+                    "commitment".to_string(),
+                    "verifying-share".to_string(),
+                    "verifying-key".to_string(),
+                ),
             )
             .public_payload,
             signing_round2_response(
@@ -1555,6 +1786,8 @@ mod tests {
                 0,
                 "message-hash".to_string(),
                 "signature-share".to_string(),
+                "verifying-share".to_string(),
+                "verifying-key".to_string(),
             )
             .public_payload,
         ])
@@ -1584,5 +1817,23 @@ mod tests {
             coordinator_url: "http://localhost:8080".to_string(),
             node_sealing_key: format!("{node_id}-test-sealing-key"),
         }
+    }
+
+    fn expected_child_address(master_public_key_base58: &str, wallet_index: i32) -> String {
+        let master_public_key_bytes = bs58::decode(master_public_key_base58)
+            .into_vec()
+            .expect("master public key should decode");
+        let parent_public_key = Point::<Ed25519>::from_bytes(&master_public_key_bytes)
+            .expect("master public key should be a point");
+        let extended_public_key = ExtendedPublicKey::<Ed25519> {
+            public_key: parent_public_key,
+            chain_code: public_derivation_chain_code(master_public_key_base58),
+        };
+        let child_index =
+            NonHardenedIndex::try_from(wallet_index as u32).expect("index should be valid");
+        let child_public_key =
+            edwards::derive_child_public_key_with_path(&extended_public_key, [child_index]);
+
+        bs58::encode(child_public_key.public_key.to_bytes(true).as_bytes()).into_string()
     }
 }
