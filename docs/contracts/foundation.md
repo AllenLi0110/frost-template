@@ -44,7 +44,7 @@ Response:
   "service": "coordinator",
   "status": "ok",
   "database_configured": true,
-  "solana_rpc_url": "https://api.devnet.solana.com",
+  "solana_rpc_configured": true,
   "node_a_url": "http://node-a:8081",
   "node_b_url": "http://node-b:8081"
 }

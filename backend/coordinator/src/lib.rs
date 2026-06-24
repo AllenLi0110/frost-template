@@ -113,7 +113,7 @@ pub struct HealthResponse {
     service: &'static str,
     status: &'static str,
     database_configured: bool,
-    solana_rpc_url: String,
+    solana_rpc_configured: bool,
     node_a_url: String,
     node_b_url: String,
 }
@@ -378,7 +378,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         service: "coordinator",
         status: "ok",
         database_configured: !state.config.database_url.is_empty(),
-        solana_rpc_url: state.config.solana_rpc_url.clone(),
+        solana_rpc_configured: !state.config.solana_rpc_url.is_empty(),
         node_a_url: state.config.node_a_url.clone(),
         node_b_url: state.config.node_b_url.clone(),
     })

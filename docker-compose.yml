@@ -85,7 +85,7 @@ services:
   frontend:
     image: node:24
     working_dir: /workspace/frontend
-    command: sh -c "npm ci && npm run dev -- --hostname 0.0.0.0"
+    command: sh -c "rm -rf .next && ([ -d node_modules/next ] || npm ci) && npm run dev -- --hostname 0.0.0.0"
     environment:
       NEXT_PUBLIC_COORDINATOR_URL: ${NEXT_PUBLIC_COORDINATOR_URL:-http://localhost:8080}
       COORDINATOR_INTERNAL_URL: http://coordinator:8080

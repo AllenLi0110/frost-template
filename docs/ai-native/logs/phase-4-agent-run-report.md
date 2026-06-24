@@ -33,6 +33,7 @@
 - `backend/migrations/0004_create_wallet_tables.sql`
 - `frontend/app/page.tsx`
 - `frontend/app/globals.css`
+- `docker-compose.yml`
 - `scripts/verify-phase.sh`
 - `docs/ai-native/logs/ai-collaboration-log.md`
 - `docs/ai-native/logs/decision-log.md`
@@ -45,13 +46,14 @@
 | `docker compose run --rm --no-deps coordinator cargo test --workspace` | Passed | 17 coordinator tests, 5 tss-node tests, and foundation integration tests passed. |
 | `npm --prefix frontend run lint` | Passed | ESLint completed successfully. |
 | `npm --prefix frontend run build` | Passed | Next.js production build completed. |
-| `./scripts/verify-phase.sh 4` | Passed | Verified DKG gating, wallet indexes `0,1,2`, balance status handling, restart persistence, next index `3`, and frontend HTML. |
+| `./scripts/verify-phase.sh 4` | Passed | Verified DKG gating, wallet indexes `0,1,2`, balance status handling, restart persistence, next index `3`, frontend HTML, and wallet CSS asset content. |
 | `docker compose restart frontend` | Passed | Refreshed the Next.js dev CSS asset after visual inspection showed a stale cached stylesheet. |
 
 ## Failures And Retries
 
 - `cargo fmt --check --all` reported formatting differences in pre-existing `tss-node` code. To avoid unrelated churn, only the `coordinator` crate was formatted with `cargo fmt -p coordinator`.
-- Initial browser visual inspection showed wallet rows rendered with stale CSS. Restarting the frontend regenerated the CSS asset, and the served CSS included `.wallet-row` styles.
+- Initial browser visual inspection showed wallet rows rendered with stale CSS. The frontend container now clears `.next` on startup, and the Phase 4 harness checks served wallet CSS asset content.
+- Re-running the stack exposed a transient `npm ci` network failure in the frontend container. Frontend startup now reuses the `frontend-node-modules` volume when dependencies are already installed.
 - A focused security review noted that raw Solana RPC request errors could expose URL details if `SOLANA_RPC_URL` ever contains a token. The balance error path now returns sanitized public messages.
 
 ## Human Corrections
@@ -63,9 +65,9 @@
 | Field | Notes |
 |---|---|
 | Trigger | Manual user prompt started Phase 4. |
-| Verification | Phase 4 harness now exercises backend tests, frontend lint/build, DKG completion, wallet derivation, restart persistence, and balance handling. |
-| Gap | Visual CSS cache issues are not caught by HTML-only frontend checks. |
-| System update | Future frontend phases should include a browser or CSS asset check after dev server restarts. |
+| Verification | Phase 4 harness now exercises backend tests, frontend lint/build, DKG completion, wallet derivation, restart persistence, balance handling, and wallet CSS asset checks. |
+| Gap | HTML-only checks can miss stale frontend styles. |
+| System update | Frontend dev startup clears stale `.next` cache, and future frontend phases should include CSS or browser checks. |
 
 ## Risks
 

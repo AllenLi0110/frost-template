@@ -791,17 +791,66 @@ main().catch((error) => {
 '
 
   docker compose exec -T frontend node -e '
-async function main() {
-  const response = await fetch("http://localhost:3000/");
-  const html = await response.text();
+async function fetchWithRetry(url, attempts = 60) {
+  let lastError;
 
-  if (!response.ok) {
-    throw new Error(`frontend returned HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+
+      if (response.ok) {
+        return { response, text };
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${text}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  let html = "";
+  let cssBodies = [];
+
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
+    html = (await fetchWithRetry("http://localhost:3000/", 1)).text;
+
+    if (!html.includes("FROST Template") || !html.includes("Wallet Derivation")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    const stylesheetPaths = Array.from(html.matchAll(/href="([^"]+\.css)"/g), (match) => match[1]);
+
+    if (stylesheetPaths.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+
+    cssBodies = await Promise.all(
+      stylesheetPaths.map(async (path) => {
+        return (await fetchWithRetry(new URL(path, "http://localhost:3000/").toString(), 1)).text;
+      })
+    );
+
+    if (cssBodies.some((css) => /\.wallet-row\s*\{[^}]*display:\s*grid/.test(css))) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
   if (!html.includes("FROST Template") || !html.includes("Wallet Derivation")) {
     throw new Error("frontend did not render the DKG and wallet control surface");
   }
+
+  throw new Error("frontend stylesheet did not include wallet row grid styles");
 }
 
 main().catch((error) => {

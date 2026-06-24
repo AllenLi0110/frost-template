@@ -35,7 +35,8 @@ async fn health_route_reports_configured_dependencies() {
     assert_eq!(body["service"], "coordinator");
     assert_eq!(body["status"], "ok");
     assert_eq!(body["database_configured"], true);
-    assert_eq!(body["solana_rpc_url"], "https://api.devnet.solana.com");
+    assert_eq!(body["solana_rpc_configured"], true);
+    assert!(body.get("solana_rpc_url").is_none());
 }
 
 #[tokio::test]
