@@ -119,4 +119,17 @@ frost-assignment/
 
 ---
 
+## ✅ CI And Versioning
+
+Pull requests are expected to pass GitHub Actions before merge:
+
+- Repository hygiene and release metadata
+- Backend Rust tests
+- Frontend lint and build
+- Phase integration verification
+
+Release checkpoints use `VERSION`, `CHANGELOG.md`, package metadata, and Git tags. See `docs/release-process.md` for the branch protection and release flow.
+
+---
+
 Best of luck! 🎉

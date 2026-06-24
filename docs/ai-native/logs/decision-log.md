@@ -191,3 +191,27 @@ Consequences:
 
 Verification:
 - `./scripts/verify-phase.sh 4` verifies DKG gating, sequential wallet indexes, restart persistence, balance lookup status handling, and frontend rendering.
+
+### 2026-06-24 - Add CI And Release Gate After Phase 5
+
+Decision:
+- Insert a CI and versioning foundation before Phase 6 instead of rewriting earlier phase history.
+
+Context:
+- Phase 5 created enough backend, frontend, Docker, and protocol behavior that local checks were no longer enough for safe merges.
+- GitHub PRs needed complete CI status checks and a clear version checkpoint strategy.
+
+Options considered:
+- Rewrite old Phase 1-5 history to make CI appear present from the start.
+- Preserve history and add a dedicated DevOps foundation before continuing to Phase 6.
+
+Reasoning:
+- The second option is more honest and matches normal engineering discovery: once the project has meaningful integration behavior, formalize the merge gate before riskier broadcast work.
+
+Consequences:
+- Future PRs should wait for GitHub CI before merge.
+- Version impact is now part of PR review.
+- Releases are created from matching `v*` tags and remain draft until human approval.
+
+Verification:
+- `./scripts/verify-phase.sh 0` verifies release metadata and CI/release workflow files.

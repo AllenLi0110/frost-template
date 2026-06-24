@@ -12,6 +12,12 @@
 |---|---|---|
 |  |  |  |
 
+# Version Impact
+
+- [ ] No version change needed.
+- [ ] Version/changelog updated.
+- [ ] Release tag will be created after merge.
+
 # Agent Trace
 
 - Trigger:
@@ -28,6 +34,7 @@
 
 - [ ] I reviewed the files changed.
 - [ ] I reviewed verification evidence.
+- [ ] Required CI checks passed on GitHub.
 - [ ] No `.env` or secret material is included.
 - [ ] Private key/share boundaries remain intact.
 - [ ] Any skipped checks are explicitly justified.

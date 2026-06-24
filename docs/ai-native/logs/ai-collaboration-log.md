@@ -229,6 +229,50 @@ Evidence links:
 Follow-up:
 - Phase 5 should add transfer preparation and threshold signing while keeping child private material node-local.
 
+### 2026-06-24 - CI And Versioning Foundation
+
+Prompt summary:
+- After Phase 5, the user noticed that pull requests were not automatically enforcing full frontend/backend CI and asked to add proper CI/CD and version management.
+
+Important context provided:
+- The project already had local phase verification scripts.
+- The user wanted GitHub PRs to run tests before merge and wanted release/version checkpoints.
+- Earlier phase history should be preserved instead of rewritten.
+
+AI output summary:
+- Expanded GitHub Actions CI to run repository hygiene, backend tests, frontend lint/build, and Phase 5 integration verification.
+- Added release metadata through `VERSION`, `CHANGELOG.md`, frontend package version, and backend workspace version.
+- Added release process documentation and a draft GitHub release workflow for matching `v*` tags.
+- Updated the PR template, roadmap, automation design, verification harness, and decision log.
+
+Human corrections:
+- None yet.
+
+Verification:
+- Command: `node scripts/verify-release-metadata.mjs`
+- Result: passed
+- Command: `node scripts/extract-release-notes.mjs v0.1.0-alpha.5`
+- Result: passed
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 0`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 5`
+- Result: passed
+- Note: GitHub CI will run after the branch is pushed and the PR is opened.
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `VERSION`, `CHANGELOG.md`, `docs/release-process.md`, `scripts/verify-release-metadata.mjs`, `scripts/extract-release-notes.mjs`
+
+Follow-up:
+- Configure GitHub branch protection for `main` so required checks must pass before merge.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

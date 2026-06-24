@@ -58,4 +58,5 @@ After Phase 0, agents should work through isolated branches and pull requests:
 4. Run `./scripts/verify-phase.sh <phase-number>`.
 5. Add an agent run report using `docs/ai-native/templates/agent-run-report.md`.
 6. Open a pull request using `.github/pull_request_template.md`.
-7. Wait for CI and human review before merge.
+7. Confirm the PR version impact and update `CHANGELOG.md` when the change creates a release checkpoint.
+8. Wait for GitHub CI and human review before merge.

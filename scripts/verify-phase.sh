@@ -22,6 +22,9 @@ check_no_sensitive_patterns() {
 }
 
 check_phase_zero_files() {
+  test -f VERSION
+  test -f CHANGELOG.md
+  test -f docs/release-process.md
   test -f docs/ai-native/00-agent-context.md
   test -f docs/ai-native/01-implementation-roadmap.md
   test -f docs/ai-native/02-agent-operating-rules.md
@@ -33,6 +36,13 @@ check_phase_zero_files() {
   test -f .github/ISSUE_TEMPLATE/agent-task.yml
   test -f .github/pull_request_template.md
   test -f .github/workflows/ci.yml
+  test -f .github/workflows/release.yml
+  test -f scripts/verify-release-metadata.mjs
+  test -f scripts/extract-release-notes.mjs
+}
+
+check_release_metadata() {
+  node scripts/verify-release-metadata.mjs
 }
 
 check_phase_one_stack() {
@@ -1299,6 +1309,7 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_zero_files
+    check_release_metadata
     ;;
   1)
     check_no_sensitive_patterns
