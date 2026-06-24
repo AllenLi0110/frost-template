@@ -38,15 +38,15 @@ Purpose:
 Expected checks after implementation:
 
 ```bash
-docker compose config
-docker compose run --rm --no-deps coordinator cargo test --workspace
-npm --prefix frontend run lint
-docker compose up -d --force-recreate
-docker compose ps
+./scripts/verify-phase.sh 1
 ```
 
-Smoke checks should verify:
+The script verifies:
 
+- Docker Compose config.
+- Backend workspace tests.
+- Frontend lint.
+- Docker Compose startup.
 - Coordinator `/health`.
 - Coordinator `/health/nodes`.
 - Node A `/health`.

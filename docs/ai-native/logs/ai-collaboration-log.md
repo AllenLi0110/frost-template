@@ -59,6 +59,51 @@ Evidence links:
 Follow-up:
 - Use a branch and PR for Phase 1 instead of continuing to make feature work directly on `main`.
 
+### 2026-06-24 - Phase 1 Project Foundation
+
+Prompt summary:
+- Started Phase 1 from the `agent/phase-1-foundation` branch to make all runtime services boot and expose health contracts.
+
+Important context provided:
+- Phase 1 should only establish the foundation stack: coordinator, TSS nodes, PostgreSQL, frontend, env config, initial migrations, and tests.
+- FROST DKG, wallet derivation, signing, and one-click shortcuts remain out of scope.
+
+AI output summary:
+- Added a project foundation BDD feature and foundation contract document.
+- Converted coordinator and tss-node from hello-world binaries into testable axum services.
+- Added config loading from environment variables with defaults and validation.
+- Added coordinator `/health` and `/health/nodes`.
+- Added tss-node `/health`.
+- Added Docker Compose for PostgreSQL 18, coordinator, node-a, node-b, and frontend.
+- Added sanitized `.env.example`.
+- Added initial schema migration for `coordinator`, `node_a`, and `node_b`.
+- Expanded `scripts/verify-phase.sh 1` into an executable Phase 1 verification harness.
+
+Human corrections:
+- None during this phase.
+
+Verification:
+- Command: `docker compose run --rm --no-deps coordinator sh -c "rustup component add rustfmt >/dev/null && cargo fmt --all"`
+- Result: passed
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `docker compose config`
+- Result: passed
+- Command: `docker compose up -d --force-recreate`
+- Result: passed
+- Command: compose-network smoke test for coordinator `/health`, node-a `/health`, node-b `/health`, and coordinator `/health/nodes`
+- Result: all endpoints returned HTTP 200 and both nodes were reachable
+- Command: `./scripts/verify-phase.sh 1`
+- Result: passed after rerunning outside the sandbox because Docker daemon access is required
+
+Evidence links:
+- Files: `features/project-foundation.feature`, `docs/contracts/foundation.md`, `backend/coordinator/src/lib.rs`, `backend/tss-node/src/lib.rs`, `docker-compose.yml`, `.env.example`, `backend/migrations/0001_create_foundation_schemas.sql`, `scripts/verify-phase.sh`, `docs/ai-native/logs/phase-1-agent-run-report.md`
+
+Follow-up:
+- Phase 2 should build on the Phase 1 axum routers, config structs, Docker Compose topology, and migration layout.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name
