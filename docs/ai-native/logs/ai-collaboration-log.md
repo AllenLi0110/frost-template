@@ -147,6 +147,47 @@ Evidence links:
 Follow-up:
 - Phase 3 should replace the placeholder DKG implementation behind `DkgCryptoService` with real `frost-ed25519` behavior while preserving the coordinator API contract and frontend workflow.
 
+### 2026-06-24 - Phase 3 FROST DKG Crypto Integration
+
+Prompt summary:
+- Started Phase 3 from the `agent/phase-3-frost-dkg-crypto` branch to replace placeholder DKG behavior with real FROST Ed25519 DKG.
+
+Important context provided:
+- Coordinator public APIs and frontend workflow from Phase 2 should remain stable.
+- Root shares, nonce secrets, and long-lived key packages must stay out of Coordinator and Frontend.
+- Cargo resolves `frost-ed25519` to `2.2.0` even though the manifest declares `2.1.0`.
+
+AI output summary:
+- Added Phase 3 BDD scenarios for real FROST DKG and node-local private material boundaries.
+- Added a FROST DKG crypto contract describing internal package maps, response payloads, and forbidden coordinator fields.
+- Added node-local DKG state tables in `node_a` and `node_b`.
+- Replaced `PlaceholderDkgCryptoService` with `FrostDkgCryptoService`.
+- Added node-local encryption for Round 1 secret package, Round 2 secret package, and final key package.
+- Updated Coordinator to route peer Round 1 and Round 2 packages from stored step payloads.
+- Updated Coordinator completion logic to store the real matching master public key from Round 3 payloads.
+- Redacted Round 2 routing packages from frontend-facing coordinator responses while keeping them available for internal Round 3 routing.
+- Added Phase 3 verification harness for real DKG, node-local private persistence, coordinator forbidden-field checks, and restart persistence.
+
+Human corrections:
+- None during this phase.
+
+Verification:
+- Command: `docker compose run --rm --no-deps coordinator cargo test --workspace`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 3`
+- Result: passed
+- Note: `cargo fmt --check` could not run because the Docker Rust image does not include `rustfmt`.
+
+Evidence links:
+- Files: `features/dkg-flow.feature`, `docs/contracts/frost-dkg-crypto.md`, `backend/migrations/0003_create_node_dkg_state.sql`, `backend/coordinator/src/lib.rs`, `backend/tss-node/src/lib.rs`, `docker-compose.yml`, `.env.example`, `scripts/verify-phase.sh`, `docs/ai-native/logs/phase-3-agent-run-report.md`
+
+Follow-up:
+- Phase 4 should derive Solana wallet addresses from the completed public DKG context while keeping private child share derivation node-local.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

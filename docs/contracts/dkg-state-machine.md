@@ -1,6 +1,6 @@
 # Phase 2 DKG State Machine Contracts
 
-Phase 2 makes DKG observable and persistent. It intentionally uses placeholder crypto responses from TSS nodes, but the placeholder behavior must live behind a node-side crypto service boundary so Phase 3 can replace it with `frost-ed25519`.
+Phase 2 makes DKG observable and persistent. Phase 3 keeps this coordinator contract stable while replacing the node-side placeholder crypto adapter with real `frost-ed25519` DKG. See `docs/contracts/frost-dkg-crypto.md` for the Phase 3 internal payload details.
 
 ## Runtime Boundary
 

@@ -122,3 +122,49 @@ Consequences:
 
 Verification:
 - `./scripts/verify-phase.sh 2` verifies frontend load, and headless browser checks confirmed the DKG UI renders on desktop/mobile.
+
+### 2026-06-24 - Persist FROST DKG Private Material Only In Node Schemas
+
+Decision:
+- TSS nodes persist encrypted Round 1 secret packages, Round 2 secret packages, and final key packages in `node_a.node_dkg_state` and `node_b.node_dkg_state`; Coordinator persists only protocol step payloads and the final master public key.
+
+Context:
+- Phase 3 replaces placeholder DKG with real `frost-ed25519` while preserving the Phase 2 coordinator state machine and frontend workflow.
+
+Options considered:
+- Store all DKG material in the coordinator schema for simpler orchestration.
+- Store only public/routed payloads in Coordinator and keep secret/key packages encrypted in node schemas.
+
+Reasoning:
+- The second option matches the TSS ownership boundary: Coordinator can orchestrate and route, but cannot reconstruct long-lived signing material.
+
+Consequences:
+- TSS nodes now require a `NODE_SEALING_KEY`.
+- Coordinator must build Round 2 and Round 3 internal requests from previously completed public payloads.
+- Coordinator must redact Round 2 routing packages from frontend-facing responses.
+- Verification must inspect both coordinator and node schemas.
+
+Verification:
+- `./scripts/verify-phase.sh 3` verifies real DKG completion, encrypted node-local private material, absence of forbidden private fields in coordinator payloads, and restart persistence.
+
+### 2026-06-24 - Keep Coordinator Public DKG API Stable Across Phase 3
+
+Decision:
+- Phase 3 changes only the coordinator-to-node internal request body and stored payload contents; the public coordinator endpoints from Phase 2 remain unchanged.
+
+Context:
+- The frontend already drives DKG manually through the Phase 2 state machine.
+
+Options considered:
+- Change public APIs to expose FROST-specific package exchange details.
+- Keep public APIs stable and hide package routing behind Coordinator.
+
+Reasoning:
+- The visible product requirement is manual step control, not raw crypto package management. Keeping the public API stable protects the frontend and future agents from unnecessary churn.
+
+Consequences:
+- Coordinator owns the mapping from completed step payloads to node internal request maps.
+- Frontend continues to display session status, node round status, action results, and master public key without direct node calls.
+
+Verification:
+- Coordinator request-builder unit tests cover Round 2 and Round 3 peer package maps.

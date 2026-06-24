@@ -93,15 +93,22 @@ Purpose:
 Expected checks:
 
 ```bash
-docker compose run --rm --no-deps coordinator cargo test --workspace
+./scripts/verify-phase.sh 3
 ```
 
-Additional checks should prove:
+The script verifies:
 
+- Sensitive-pattern scan and whitespace checks.
+- Docker Compose config.
+- Backend workspace tests.
+- Frontend lint.
+- Frontend production build.
+- Docker Compose startup.
 - 2-of-2 DKG produces a master public key.
 - Node A and Node B persist their own private material.
 - Coordinator stores only public metadata.
 - Coordinator API responses do not contain root shares.
+- Completed FROST DKG session survives coordinator and node restart.
 
 ## Later Phases
 

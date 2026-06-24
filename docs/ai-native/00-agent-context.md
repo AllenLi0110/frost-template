@@ -19,7 +19,7 @@ Build a minimal 2-of-2 TSS Solana wallet demo using FROST Ed25519 and non-harden
 - Backend: Rust `1.94.0`, axum `0.8.8`, snafu `0.8.7`, sqlx `0.8.6`, PostgreSQL `18`.
 - Frontend: Next.js `16`, React `19`, TypeScript `5.9`.
 - Solana: `solana-client` `3.1.8`, `solana-sdk` `3.0.0`.
-- Crypto: `frost-ed25519` `2.1.0`, `hd-wallet` `0.6.1`.
+- Crypto: `frost-ed25519` declared as `2.1.0` and currently resolved by Cargo as `2.2.0`, `hd-wallet` `0.6.1`.
 
 ## Non-Negotiable Product Requirements
 
@@ -69,4 +69,3 @@ Read the system design before implementing:
 ## Implementation Rule
 
 For every feature, first update `features/*.feature`, then define API or data contracts, then write tests, then implement.
-

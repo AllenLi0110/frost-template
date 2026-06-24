@@ -51,3 +51,17 @@ Feature: Step-by-step DKG flow
     When the coordinator restarts
     Then the active DKG session should still be "COMPLETED"
     And the master public key should still be available
+
+  Scenario: Complete DKG with real FROST packages
+    Given no completed DKG session exists
+    When I complete Node A and Node B DKG rounds one step at a time
+    Then the DKG session status should be "COMPLETED"
+    And the master public key should be a Base58-encoded FROST Ed25519 public key
+    And the completed round payloads should not be placeholder crypto responses
+
+  Scenario: Keep private DKG material node-local
+    Given a DKG session is "COMPLETED"
+    Then Node A should persist its encrypted DKG key package in the Node A schema
+    And Node B should persist its encrypted DKG key package in the Node B schema
+    And the coordinator schema should not contain root shares, private shares, nonce secrets, or secret keys
+    And coordinator API responses should not expose root shares, private shares, nonce secrets, or secret keys

@@ -52,6 +52,7 @@ services:
       TSS_NODE_PORT: 8081
       DATABASE_URL: ${DATABASE_URL:-postgres://frost:frost@postgres:5432/frost}
       COORDINATOR_URL: http://coordinator:8080
+      NODE_SEALING_KEY: ${NODE_A_SEALING_KEY:-dev-only-node-a-sealing-key-change-me}
     volumes:
       - ./backend:/workspace/backend
       - cargo-registry:/usr/local/cargo/registry
@@ -71,6 +72,7 @@ services:
       TSS_NODE_PORT: 8081
       DATABASE_URL: ${DATABASE_URL:-postgres://frost:frost@postgres:5432/frost}
       COORDINATOR_URL: http://coordinator:8080
+      NODE_SEALING_KEY: ${NODE_B_SEALING_KEY:-dev-only-node-b-sealing-key-change-me}
     volumes:
       - ./backend:/workspace/backend
       - cargo-registry:/usr/local/cargo/registry
