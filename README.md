@@ -162,6 +162,12 @@ open http://localhost:3000
 
 If `open` is not available, manually visit [http://localhost:3000](http://localhost:3000).
 
+Phase 6 verification uses an isolated Docker Compose project with `SOLANA_RPC_URL=mock://phase6`, so it does not overwrite this Devnet demo stack. If you ever need to force the local demo back onto Devnet, recreate the coordinator:
+
+```bash
+docker compose up -d --force-recreate coordinator
+```
+
 ### 2. Complete DKG
 
 In the `DKG Control Surface` section:

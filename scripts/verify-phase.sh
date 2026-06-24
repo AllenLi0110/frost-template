@@ -8,6 +8,19 @@ if [[ -z "$phase" ]]; then
   exit 2
 fi
 
+phase_six_compose() {
+  COMPOSE_PROJECT_NAME="${PHASE_SIX_COMPOSE_PROJECT:-frost-template-verify-phase6}" \
+  POSTGRES_HOST_PORT="${PHASE_SIX_POSTGRES_HOST_PORT:-15432}" \
+  COORDINATOR_HOST_PORT="${PHASE_SIX_COORDINATOR_HOST_PORT:-18080}" \
+  FRONTEND_HOST_PORT="${PHASE_SIX_FRONTEND_HOST_PORT:-13000}" \
+  SOLANA_RPC_URL=mock://phase6 \
+  docker compose "$@"
+}
+
+cleanup_phase_six_stack() {
+  phase_six_compose down -v --remove-orphans >/dev/null 2>&1 || true
+}
+
 check_no_sensitive_patterns() {
   local paths=()
 
@@ -1312,16 +1325,16 @@ main().catch((error) => {
 }
 
 check_phase_six_stack() {
-  docker compose config >/dev/null
-  docker compose run --rm --no-deps coordinator cargo test --workspace
+  phase_six_compose config >/dev/null
+  phase_six_compose run --rm --no-deps coordinator cargo test --workspace
   npm --prefix frontend run lint
   npm --prefix frontend run build
-  SOLANA_RPC_URL=mock://phase6 docker compose up -d --force-recreate
-  docker compose ps
+  phase_six_compose up -d --force-recreate
+  phase_six_compose ps
 
-  docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.signing_requests CASCADE; TRUNCATE coordinator.wallets CASCADE; TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state; TRUNCATE node_a.node_signing_states; TRUNCATE node_b.node_signing_states;"
+  phase_six_compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.signing_requests CASCADE; TRUNCATE coordinator.wallets CASCADE; TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state; TRUNCATE node_a.node_signing_states; TRUNCATE node_b.node_signing_states;"
 
-  docker compose exec -T frontend node -e '
+  phase_six_compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
 const forbiddenFields = [
   "root_share",
@@ -1492,7 +1505,7 @@ main().catch((error) => {
 });
 '
 
-  docker compose exec -T frontend node -e '
+  phase_six_compose exec -T frontend node -e '
 async function fetchWithRetry(url, attempts = 120) {
   let lastError;
 
@@ -1595,9 +1608,13 @@ case "$phase" in
     check_phase_five_stack
     ;;
   6)
+    trap cleanup_phase_six_stack EXIT
+    cleanup_phase_six_stack
     check_no_sensitive_patterns
     git diff --check
     check_phase_six_stack
+    cleanup_phase_six_stack
+    trap - EXIT
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."
