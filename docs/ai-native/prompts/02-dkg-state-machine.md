@@ -6,6 +6,7 @@ You are working in the repository root.
 Read first:
 - docs/ai-native/00-agent-context.md
 - docs/ai-native/01-implementation-roadmap.md
+- docs/contracts/foundation.md
 - features/dkg-flow.feature
 - External system design reference: 15.design-frost-template.md
 - backend/Cargo.toml
@@ -22,6 +23,7 @@ Scope:
 - Backend tests for valid and invalid DKG flows.
 
 Important:
+- Build on the Phase 1 axum routers, config structs, Docker Compose stack, and migration layout.
 - If placeholder crypto is used in this phase, isolate it behind a CryptoService trait so Phase 3 can replace it with frost-ed25519.
 - Do not return or persist private root shares in coordinator tables.
 - Do not add a "Run All" button or equivalent shortcut.
@@ -38,4 +40,3 @@ Definition of done:
 - Tests pass.
 - Collaboration log is updated.
 ```
-

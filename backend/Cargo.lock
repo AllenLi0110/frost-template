@@ -624,7 +624,9 @@ name = "coordinator"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "dotenvy",
  "hd-wallet",
+ "reqwest",
  "serde",
  "serde_json",
  "snafu",
@@ -632,6 +634,7 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -5977,6 +5980,7 @@ name = "tss-node"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "dotenvy",
  "frost-ed25519",
  "hd-wallet",
  "serde",
@@ -5985,6 +5989,7 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",

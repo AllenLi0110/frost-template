@@ -35,6 +35,47 @@ check_phase_zero_files() {
   test -f .github/workflows/ci.yml
 }
 
+check_phase_one_stack() {
+  docker compose config >/dev/null
+  docker compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  docker compose up -d --force-recreate
+  docker compose ps
+  docker compose exec frontend node -e '
+const urls = [
+  "http://coordinator:8080/health",
+  "http://node-a:8081/health",
+  "http://node-b:8081/health",
+  "http://coordinator:8080/health/nodes"
+];
+
+async function main() {
+  for (const url of urls) {
+    const response = await fetch(url);
+    const body = await response.text();
+
+    if (!response.ok) {
+      throw new Error(`${url} returned ${response.status}: ${body}`);
+    }
+
+    if (url.endsWith("/health/nodes")) {
+      const payload = JSON.parse(body);
+      const unreachable = payload.nodes.filter((node) => !node.reachable);
+
+      if (unreachable.length > 0) {
+        throw new Error(`unreachable nodes: ${JSON.stringify(unreachable)}`);
+      }
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -42,8 +83,9 @@ case "$phase" in
     check_phase_zero_files
     ;;
   1)
-    echo "Phase 1 verification is available after the service foundation is implemented."
-    echo "Expected checks: docker compose config, backend tests, frontend lint, compose smoke tests."
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_one_stack
     ;;
   2)
     echo "Phase 2 verification is available after the DKG state machine is implemented."
