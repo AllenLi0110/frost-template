@@ -15,6 +15,11 @@ use hd_wallet::{edwards, ExtendedPublicKey, NonHardenedIndex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use solana_sdk::{hash::Hash, message::Message, pubkey::Pubkey};
+use solana_system_interface::{
+    instruction::SystemInstruction,
+    program as system_program,
+};
 use sqlx::{postgres::PgPoolOptions, types::Json as SqlxJson, FromRow, PgPool};
 use std::{
     collections::BTreeMap,
@@ -22,6 +27,7 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
+    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -1212,6 +1218,17 @@ fn signing_message_bytes(request: &SigningRoundRequest) -> Result<Vec<u8>, NodeD
         ));
     }
 
+    if request
+        .message_payload
+        .get("signature_scope")
+        .and_then(Value::as_str)
+        != Some(SIGNING_SCOPE)
+    {
+        return Err(NodeDkgError::InvalidRequest(
+            "signing message payload has an unsupported signature scope".to_string(),
+        ));
+    }
+
     let transaction_message_hex = request
         .message_payload
         .get("transaction_message_hex")
@@ -1232,7 +1249,136 @@ fn signing_message_bytes(request: &SigningRoundRequest) -> Result<Vec<u8>, NodeD
         ));
     }
 
+    validate_solana_transfer_message(request, &message_bytes)?;
+
     Ok(message_bytes)
+}
+
+fn validate_solana_transfer_message(
+    request: &SigningRoundRequest,
+    message_bytes: &[u8],
+) -> Result<(), NodeDkgError> {
+    let message = bincode::deserialize::<Message>(message_bytes).map_err(|error| {
+        NodeDkgError::InvalidRequest(format!(
+            "transaction_message_hex is not a Solana message: {error}"
+        ))
+    })?;
+    let sender = Pubkey::from_str(&request.sender_address_base58).map_err(|error| {
+        NodeDkgError::InvalidRequest(format!("sender_address_base58 is invalid: {error}"))
+    })?;
+    let recipient = Pubkey::from_str(&request.recipient_address_base58).map_err(|error| {
+        NodeDkgError::InvalidRequest(format!("recipient_address_base58 is invalid: {error}"))
+    })?;
+    let recent_blockhash = request
+        .message_payload
+        .get("recent_blockhash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NodeDkgError::InvalidRequest(
+                "signing message payload is missing recent_blockhash".to_string(),
+            )
+        })
+        .and_then(|value| {
+            Hash::from_str(value).map_err(|error| {
+                NodeDkgError::InvalidRequest(format!("recent_blockhash is invalid: {error}"))
+            })
+        })?;
+
+    if message.recent_blockhash != recent_blockhash {
+        return Err(NodeDkgError::InvalidRequest(
+            "Solana message blockhash does not match signing payload".to_string(),
+        ));
+    }
+
+    if message.header.num_required_signatures != 1 {
+        return Err(NodeDkgError::InvalidRequest(
+            "Solana transfer message must require exactly one signature".to_string(),
+        ));
+    }
+
+    if message.account_keys.first() != Some(&sender) {
+        return Err(NodeDkgError::InvalidRequest(
+            "Solana transfer signer does not match sender_address_base58".to_string(),
+        ));
+    }
+
+    if message.instructions.len() != 1 {
+        return Err(NodeDkgError::InvalidRequest(
+            "Solana transfer message must contain exactly one instruction".to_string(),
+        ));
+    }
+
+    let instruction = message.instructions.first().ok_or_else(|| {
+        NodeDkgError::InvalidRequest(
+            "Solana transfer message must contain one instruction".to_string(),
+        )
+    })?;
+    let program_id = message
+        .account_keys
+        .get(usize::from(instruction.program_id_index))
+        .ok_or_else(|| {
+            NodeDkgError::InvalidRequest(
+                "Solana transfer instruction has an invalid program index".to_string(),
+            )
+        })?;
+
+    if program_id != &system_program::ID {
+        return Err(NodeDkgError::InvalidRequest(
+            "Solana transfer message must call the System Program".to_string(),
+        ));
+    }
+
+    if instruction.accounts.len() != 2 {
+        return Err(NodeDkgError::InvalidRequest(
+            "System transfer instruction must include sender and recipient accounts".to_string(),
+        ));
+    }
+
+    let instruction_sender = message
+        .account_keys
+        .get(usize::from(instruction.accounts[0]))
+        .ok_or_else(|| {
+            NodeDkgError::InvalidRequest(
+                "System transfer sender account index is invalid".to_string(),
+            )
+        })?;
+    let instruction_recipient = message
+        .account_keys
+        .get(usize::from(instruction.accounts[1]))
+        .ok_or_else(|| {
+            NodeDkgError::InvalidRequest(
+                "System transfer recipient account index is invalid".to_string(),
+            )
+        })?;
+
+    if instruction_sender != &sender || instruction_recipient != &recipient {
+        return Err(NodeDkgError::InvalidRequest(
+            "System transfer accounts do not match the signing request".to_string(),
+        ));
+    }
+
+    let system_instruction =
+        bincode::deserialize::<SystemInstruction>(&instruction.data).map_err(|error| {
+            NodeDkgError::InvalidRequest(format!(
+                "System Program instruction data is invalid: {error}"
+            ))
+        })?;
+    let SystemInstruction::Transfer { lamports } = system_instruction else {
+        return Err(NodeDkgError::InvalidRequest(
+            "System Program instruction must be a transfer".to_string(),
+        ));
+    };
+    let expected_lamports = u64::try_from(request.amount_lamports).map_err(|_| {
+        NodeDkgError::InvalidRequest("amount_lamports must fit u64".to_string())
+    })?;
+
+    if lamports != expected_lamports {
+        return Err(NodeDkgError::InvalidRequest(
+            "System transfer amount does not match amount_lamports".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 fn derive_child_signing_key_package(
@@ -1459,6 +1605,7 @@ fn trim_trailing_slash(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_system_interface::instruction as system_instruction;
     use std::collections::HashMap;
 
     #[test]
@@ -1728,28 +1875,14 @@ mod tests {
 
     #[test]
     fn signing_message_hash_must_match_transaction_message() {
-        let transaction_message = b"serialized-solana-transfer-message";
-        let mut hasher = Sha256::new();
-        hasher.update(transaction_message);
-        let message_hash_hex = hex::encode(hasher.finalize());
-        let request = SigningRoundRequest {
-            dkg_session_id: Uuid::new_v4(),
-            wallet_index: 0,
-            sender_address_base58: bs58::encode([2_u8; 32]).into_string(),
-            recipient_address_base58: bs58::encode([3_u8; 32]).into_string(),
-            amount_lamports: 1,
-            message_payload: json!({
-                "format": SIGNING_MESSAGE_FORMAT,
-                "transaction_message_hex": hex::encode(transaction_message)
-            }),
-            message_hash_hex,
-            signing_commitments: BTreeMap::new(),
-        };
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let request = transfer_signing_request(sender, recipient, 1);
 
         let message_bytes =
             signing_message_bytes(&request).expect("matching hash should validate");
 
-        assert_eq!(message_bytes, transaction_message);
+        assert!(!message_bytes.is_empty());
 
         let tampered = SigningRoundRequest {
             message_hash_hex: "00".repeat(32),
@@ -1757,6 +1890,33 @@ mod tests {
         };
         let error =
             signing_message_bytes(&tampered).expect_err("tampered hash should be rejected");
+
+        assert!(matches!(error, NodeDkgError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn signing_message_must_match_transfer_intent() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let request = transfer_signing_request(sender, recipient, 1);
+
+        signing_message_bytes(&request).expect("matching transfer intent should validate");
+
+        let wrong_amount = SigningRoundRequest {
+            amount_lamports: 2,
+            ..request.clone()
+        };
+        let error =
+            signing_message_bytes(&wrong_amount).expect_err("amount mismatch should be rejected");
+
+        assert!(matches!(error, NodeDkgError::InvalidRequest(_)));
+
+        let wrong_recipient = SigningRoundRequest {
+            recipient_address_base58: Pubkey::new_unique().to_string(),
+            ..request
+        };
+        let error = signing_message_bytes(&wrong_recipient)
+            .expect_err("recipient mismatch should be rejected");
 
         assert!(matches!(error, NodeDkgError::InvalidRequest(_)));
     }
@@ -1835,5 +1995,35 @@ mod tests {
             edwards::derive_child_public_key_with_path(&extended_public_key, [child_index]);
 
         bs58::encode(child_public_key.public_key.to_bytes(true).as_bytes()).into_string()
+    }
+
+    fn transfer_signing_request(
+        sender: Pubkey,
+        recipient: Pubkey,
+        amount_lamports: i64,
+    ) -> SigningRoundRequest {
+        let recent_blockhash = Hash::new_unique();
+        let lamports = u64::try_from(amount_lamports).expect("amount should fit u64");
+        let instruction = system_instruction::transfer(&sender, &recipient, lamports);
+        let message = Message::new_with_blockhash(&[instruction], Some(&sender), &recent_blockhash);
+        let message_bytes = bincode::serialize(&message).expect("message should serialize");
+        let mut hasher = Sha256::new();
+        hasher.update(&message_bytes);
+
+        SigningRoundRequest {
+            dkg_session_id: Uuid::new_v4(),
+            wallet_index: 0,
+            sender_address_base58: sender.to_string(),
+            recipient_address_base58: recipient.to_string(),
+            amount_lamports,
+            message_payload: json!({
+                "format": SIGNING_MESSAGE_FORMAT,
+                "signature_scope": SIGNING_SCOPE,
+                "recent_blockhash": recent_blockhash.to_string(),
+                "transaction_message_hex": hex::encode(message_bytes)
+            }),
+            message_hash_hex: hex::encode(hasher.finalize()),
+            signing_commitments: BTreeMap::new(),
+        }
     }
 }

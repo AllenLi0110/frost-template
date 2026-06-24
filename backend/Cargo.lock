@@ -6071,6 +6071,7 @@ version = "0.1.2"
 dependencies = [
  "aes-gcm-siv",
  "axum",
+ "bincode",
  "bs58",
  "dotenvy",
  "frost-core",
@@ -6083,6 +6084,7 @@ dependencies = [
  "sha2",
  "snafu",
  "solana-sdk",
+ "solana-system-interface",
  "sqlx",
  "tokio",
  "tower",
