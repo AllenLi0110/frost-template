@@ -451,6 +451,7 @@ enum DkgError {
     SigningTransitionBlocked(String),
     SigningAggregationFailed(String),
     SolanaRpcFailed(String),
+    SolanaRpcAmbiguous(String),
     WalletDerivationBlocked(String),
     WalletDerivationFailed(String),
     Database(sqlx::Error),
@@ -478,6 +479,7 @@ impl fmt::Display for DkgError {
             Self::SigningTransitionBlocked(message) => write!(f, "{message}"),
             Self::SigningAggregationFailed(message) => write!(f, "{message}"),
             Self::SolanaRpcFailed(message) => write!(f, "{message}"),
+            Self::SolanaRpcAmbiguous(message) => write!(f, "{message}"),
             Self::WalletDerivationBlocked(message) => write!(f, "{message}"),
             Self::WalletDerivationFailed(message) => write!(f, "{message}"),
             Self::Database(error) => write!(f, "database error: {error}"),
@@ -510,7 +512,9 @@ impl IntoResponse for DkgError {
             | Self::WalletDerivationBlocked(_)
             | Self::SigningTransitionBlocked(_)
             | Self::SigningAggregationFailed(_) => StatusCode::CONFLICT,
-            Self::NodeCallFailed(_) | Self::SolanaRpcFailed(_) => StatusCode::BAD_GATEWAY,
+            Self::NodeCallFailed(_) | Self::SolanaRpcFailed(_) | Self::SolanaRpcAmbiguous(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::WalletDerivationFailed(_) | Self::Database(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -823,6 +827,19 @@ async fn broadcast_signing_request(
     .await;
     let transaction_signature = match send_result {
         Ok(transaction_signature) => transaction_signature,
+        Err(DkgError::SolanaRpcAmbiguous(message)) => {
+            let explorer_url = explorer_url(&prepared_transaction.signature_base58);
+            mark_signing_request_broadcasted(
+                pool,
+                request_id,
+                &prepared_transaction.signature_base58,
+                &explorer_url,
+                Some(&message),
+            )
+            .await?;
+
+            return Err(DkgError::SolanaRpcAmbiguous(message));
+        }
         Err(error) => {
             mark_signing_request_failed(pool, request_id, &error.to_string()).await?;
             return Err(error);
@@ -830,23 +847,8 @@ async fn broadcast_signing_request(
     };
     let explorer_url = explorer_url(&transaction_signature);
 
-    sqlx::query(
-        r#"
-        UPDATE coordinator.signing_requests
-        SET status = $1,
-            transaction_signature = $2,
-            explorer_url = $3,
-            error_message = NULL,
-            updated_at = now()
-        WHERE id = $4
-        "#,
-    )
-    .bind(SIGNING_STATUS_BROADCASTED)
-    .bind(&transaction_signature)
-    .bind(&explorer_url)
-    .bind(request_id)
-    .execute(pool)
-    .await?;
+    mark_signing_request_broadcasted(pool, request_id, &transaction_signature, &explorer_url, None)
+        .await?;
 
     let updated_request = fetch_signing_request(pool, request_id)
         .await?
@@ -1428,6 +1430,35 @@ async fn mark_signing_request_failed(
         "#,
     )
     .bind(SIGNING_STATUS_FAILED)
+    .bind(error_message)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn mark_signing_request_broadcasted(
+    pool: &PgPool,
+    request_id: Uuid,
+    transaction_signature: &str,
+    explorer_url: &str,
+    error_message: Option<&str>,
+) -> Result<(), DkgError> {
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1,
+            transaction_signature = $2,
+            explorer_url = $3,
+            error_message = $4,
+            updated_at = now()
+        WHERE id = $5
+        "#,
+    )
+    .bind(SIGNING_STATUS_BROADCASTED)
+    .bind(transaction_signature)
+    .bind(explorer_url)
     .bind(error_message)
     .bind(request_id)
     .execute(pool)
@@ -2077,7 +2108,7 @@ async fn send_solana_transaction(
         }))
         .send()
         .await
-        .map_err(|_| solana_rpc_transport_failure("sendTransaction"))?;
+        .map_err(|_| solana_rpc_ambiguous_send_failure())?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -2089,7 +2120,7 @@ async fn send_solana_transaction(
     let payload = response
         .json::<SolanaSendTransactionRpcResponse>()
         .await
-        .map_err(|_| solana_rpc_decode_failure("sendTransaction"))?;
+        .map_err(|_| solana_rpc_ambiguous_send_failure())?;
 
     if let Some(error) = payload.error {
         let public_message = public_error_message(&error.message);
@@ -2221,6 +2252,13 @@ fn solana_rpc_transport_failure(operation: &str) -> DkgError {
 
 fn solana_rpc_decode_failure(operation: &str) -> DkgError {
     DkgError::SolanaRpcFailed(format!("Solana {operation} response was invalid"))
+}
+
+fn solana_rpc_ambiguous_send_failure() -> DkgError {
+    DkgError::SolanaRpcAmbiguous(
+        "Solana sendTransaction outcome is unknown; refresh confirmation before creating another request"
+            .to_string(),
+    )
 }
 
 fn public_error_message(message: &str) -> String {
@@ -3570,12 +3608,20 @@ mod tests {
     fn solana_transport_errors_do_not_echo_rpc_urls() {
         let transport_error = solana_rpc_transport_failure("sendTransaction").to_string();
         let decode_error = solana_rpc_decode_failure("confirmation").to_string();
+        let ambiguous_send_error = solana_rpc_ambiguous_send_failure().to_string();
 
-        for message in [transport_error, decode_error] {
+        for message in [transport_error, decode_error, ambiguous_send_error] {
             assert!(!message.contains("https://"));
             assert!(!message.contains("api-key"));
             assert!(!message.contains("token"));
         }
+    }
+
+    #[test]
+    fn send_transaction_transport_failure_is_ambiguous() {
+        let error = solana_rpc_ambiguous_send_failure();
+
+        assert!(matches!(error, DkgError::SolanaRpcAmbiguous(_)));
     }
 
     #[test]
