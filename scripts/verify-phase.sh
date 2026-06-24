@@ -935,7 +935,6 @@ main().catch((error) => {
 
   docker compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
-const recipient = "11111111111111111111111111111111";
 const forbiddenFields = [
   "root_share",
   "private_share",
@@ -995,29 +994,19 @@ function assertNoForbiddenFields(value) {
   }
 }
 
-async function createSigningRequest(walletIndex, amountLamports) {
+async function createSigningRequest(walletIndex, recipientAddress, amountLamports) {
   return expectOk("/api/signing-requests", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       wallet_index: walletIndex,
-      recipient_address_base58: recipient,
+      recipient_address_base58: recipientAddress,
       amount_lamports: amountLamports
     })
   });
 }
 
 async function main() {
-  await expectStatus("/api/signing-requests", 404, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      wallet_index: 99,
-      recipient_address_base58: recipient,
-      amount_lamports: 1
-    })
-  });
-
   const session = await expectOk("/api/dkg/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1035,8 +1024,20 @@ async function main() {
   await triggerDkg(session.session_id, "node-b", 3);
 
   const wallet = await expectOk("/api/wallets", { method: "POST" });
-  const firstRequest = await createSigningRequest(wallet.wallet_index, 1000);
-  const secondRequest = await createSigningRequest(wallet.wallet_index, 2000);
+  const recipientWallet = await expectOk("/api/wallets", { method: "POST" });
+
+  await expectStatus("/api/signing-requests", 404, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      wallet_index: 99,
+      recipient_address_base58: recipientWallet.address_base58,
+      amount_lamports: 1
+    })
+  });
+
+  const firstRequest = await createSigningRequest(wallet.wallet_index, recipientWallet.address_base58, 1000);
+  const secondRequest = await createSigningRequest(wallet.wallet_index, recipientWallet.address_base58, 2000);
 
   if (firstRequest.request_id === secondRequest.request_id) {
     throw new Error(`multiple signing requests reused an id: ${JSON.stringify([firstRequest, secondRequest])}`);
@@ -1109,7 +1110,6 @@ main().catch((error) => {
 
   docker compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
-const recipient = "11111111111111111111111111111111";
 
 async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, options);
@@ -1140,12 +1140,19 @@ async function expectStatus(path, status, options = {}) {
 }
 
 async function main() {
+  const walletList = await expectOk("/api/wallets");
+  const senderWallet = walletList.wallets.find((wallet) => wallet.wallet_index === 0);
+
+  if (!senderWallet) {
+    throw new Error(`wallet 0 was not available for failure regression: ${JSON.stringify(walletList)}`);
+  }
+
   const failedRequest = await expectOk("/api/signing-requests", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       wallet_index: 0,
-      recipient_address_base58: recipient,
+      recipient_address_base58: senderWallet.address_base58,
       amount_lamports: 3000
     })
   });
@@ -1316,7 +1323,6 @@ check_phase_six_stack() {
 
   docker compose exec -T frontend node -e '
 const baseUrl = "http://coordinator:8080";
-const recipient = "11111111111111111111111111111111";
 const forbiddenFields = [
   "root_share",
   "private_share",
@@ -1426,12 +1432,13 @@ async function main() {
   await triggerDkg(session.session_id, "node-b", 3);
 
   const wallet = await expectOk("/api/wallets", { method: "POST" });
+  const recipientWallet = await expectOk("/api/wallets", { method: "POST" });
   const signingRequest = await expectOk("/api/signing-requests", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       wallet_index: wallet.wallet_index,
-      recipient_address_base58: recipient,
+      recipient_address_base58: recipientWallet.address_base58,
       amount_lamports: 1000
     })
   });

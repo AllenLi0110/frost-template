@@ -103,7 +103,7 @@ const nodes: Array<{ id: NodeId; label: string }> = [
 
 const rounds: Round[] = [1, 2, 3];
 const signingRounds: SigningRound[] = [1, 2];
-const defaultRecipientAddress = "11111111111111111111111111111111";
+const defaultRecipientAddress = "";
 
 export default function Home() {
   const [session, setSession] = useState<DkgSession | null>(null);
@@ -402,6 +402,15 @@ export default function Home() {
         label: "Signing request",
         status: "error",
         message: "Amount must be a positive lamport integer.",
+      });
+      return;
+    }
+
+    if (!transferForm.recipientAddress.trim()) {
+      setLastAction({
+        label: "Signing request",
+        status: "error",
+        message: "Recipient address is required.",
       });
       return;
     }
@@ -783,6 +792,7 @@ export default function Home() {
                   recipientAddress: event.target.value,
                 }))
               }
+              placeholder="Paste a Devnet wallet address"
               value={transferForm.recipientAddress}
             />
           </label>

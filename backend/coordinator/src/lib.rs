@@ -57,6 +57,7 @@ const SIGNING_MESSAGE_FORMAT: &str = "frost-template-solana-transfer-message-v1"
 const SIGNING_SCOPE: &str = "child-wallet-solana-transfer";
 const MOCK_SOLANA_RPC_PREFIX: &str = "mock://";
 const SOLANA_EXPLORER_DEVNET_URL: &str = "https://explorer.solana.com/tx";
+const SOLANA_SYSTEM_PROGRAM_ADDRESS: &str = "11111111111111111111111111111111";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppConfig {
@@ -2369,6 +2370,12 @@ fn validate_create_signing_request(
         ));
     }
 
+    if payload.recipient_address_base58 == SOLANA_SYSTEM_PROGRAM_ADDRESS {
+        return Err(DkgError::InvalidSigningRequest(
+            "recipient_address_base58 must be a wallet address, not the System Program".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -3432,6 +3439,15 @@ mod tests {
         };
         let error = validate_create_signing_request(&invalid_amount)
             .expect_err("zero amount should fail");
+
+        assert!(matches!(error, DkgError::InvalidSigningRequest(_)));
+
+        let system_program_recipient = CreateSigningRequestRequest {
+            recipient_address_base58: SOLANA_SYSTEM_PROGRAM_ADDRESS.to_string(),
+            ..request
+        };
+        let error = validate_create_signing_request(&system_program_recipient)
+            .expect_err("System Program recipient should fail");
 
         assert!(matches!(error, DkgError::InvalidSigningRequest(_)));
     }

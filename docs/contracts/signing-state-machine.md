@@ -45,7 +45,7 @@ Request:
 ```json
 {
   "wallet_index": 0,
-  "recipient_address_base58": "11111111111111111111111111111111",
+  "recipient_address_base58": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
   "amount_lamports": 1000
 }
 ```
@@ -64,7 +64,7 @@ Response:
   "dkg_session_id": "00000000-0000-0000-0000-000000000000",
   "wallet_index": 0,
   "sender_address_base58": "9xQeWvG816bUx9EPfY...",
-  "recipient_address_base58": "11111111111111111111111111111111",
+  "recipient_address_base58": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
   "amount_lamports": 1000,
   "status": "PENDING",
   "message_hash_hex": null,
@@ -97,7 +97,7 @@ Response:
       "dkg_session_id": "00000000-0000-0000-0000-000000000000",
       "wallet_index": 0,
       "sender_address_base58": "9xQeWvG816bUx9EPfY...",
-      "recipient_address_base58": "11111111111111111111111111111111",
+      "recipient_address_base58": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
       "amount_lamports": 1000,
       "status": "PENDING",
       "message_hash_hex": null,
@@ -213,7 +213,7 @@ Round 2 request includes all public Round 1 commitments:
   "dkg_session_id": "00000000-0000-0000-0000-000000000000",
   "wallet_index": 0,
   "sender_address_base58": "9xQeWvG816bUx9EPfY...",
-  "recipient_address_base58": "11111111111111111111111111111111",
+  "recipient_address_base58": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
   "amount_lamports": 1000,
   "message_payload": {
     "format": "frost-template-solana-transfer-message-v1",

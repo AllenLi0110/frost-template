@@ -284,7 +284,7 @@ Attempt to debit an account but found no record of a prior credit.
 
 Fund the sender wallet with Devnet SOL, then create a new signing request.
 
-If the recipient is `11111111111111111111111111111111`, Solana RPC may return:
+If the recipient is `11111111111111111111111111111111`, the app rejects the signing request because that address is the System Program, not a wallet. Older builds may have reached Solana RPC and returned:
 
 ```text
 instruction changed the balance of a read-only account
