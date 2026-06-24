@@ -15,7 +15,7 @@ Goal:
 Replace placeholder DKG behavior with real frost-ed25519 DKG integration.
 
 Scope:
-- Implement CryptoService DKG adapter using frost-ed25519 2.1.0.
+- Implement CryptoService DKG adapter using the workspace-resolved frost-ed25519 version. The manifest declares 2.1.0 and Cargo currently resolves 2.2.0.
 - Replace the Phase 2 PlaceholderDkgCryptoService behavior without changing the coordinator state machine contract.
 - Persist node-local encrypted root share and key package.
 - Persist coordinator-visible public DKG packages and master public key.

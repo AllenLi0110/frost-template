@@ -83,6 +83,11 @@ Scope:
 - Public DKG package routing through coordinator.
 - Master public key output.
 
+Phase 3 scope clarification:
+- The public coordinator API remains the Phase 2 state-machine API.
+- Coordinator sends internal peer package maps to TSS nodes for Round 2 and Round 3.
+- Node schemas persist encrypted secret packages and key packages; the coordinator schema stores only step payloads and the master public key.
+
 Definition of done:
 - 2-of-2 DKG produces a master public key.
 - Coordinator never stores private root shares.

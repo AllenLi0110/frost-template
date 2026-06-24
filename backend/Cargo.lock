@@ -5979,12 +5979,16 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "tss-node"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm-siv",
  "axum",
+ "bs58",
  "dotenvy",
  "frost-ed25519",
  "hd-wallet",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "snafu",
  "solana-sdk",
  "sqlx",

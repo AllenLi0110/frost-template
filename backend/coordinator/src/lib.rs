@@ -9,13 +9,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, types::Json as SqlxJson, Executor, FromRow, PgPool};
-use std::{error::Error, fmt, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SOLANA_RPC_URL: &str = "https://api.devnet.solana.com";
-const MASTER_PUBLIC_KEY_PLACEHOLDER: &str = "FrostDemoMasterPublicKey11111111111111111111";
 
 const NODE_IDS: [&str; 2] = ["node-a", "node-b"];
 const DKG_ROUNDS: [i32; 3] = [1, 2, 3];
@@ -162,6 +161,12 @@ struct NodeDkgRoundResponse {
     round: i32,
     status: String,
     public_payload: Value,
+}
+
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+struct NodeDkgRoundRequest {
+    peer_round1_packages: BTreeMap<String, String>,
+    peer_round2_packages: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -420,7 +425,9 @@ async fn trigger_dkg_round(
         )));
     }
 
-    let node_response = call_node_dkg_round(&state, session_id, &node_id, round).await;
+    let node_request = build_node_dkg_round_request(&steps, &node_id, round)?;
+    let node_response =
+        call_node_dkg_round(&state, session_id, &node_id, round, &node_request).await;
     let node_response = match node_response {
         Ok(node_response) => node_response,
         Err(error) => {
@@ -458,8 +465,11 @@ async fn trigger_dkg_round(
 
     let updated_steps = fetch_session_steps(pool, session_id).await?;
     let dkg_status = derive_dkg_status(&updated_steps);
-    let master_public_key =
-        (dkg_status == STATUS_COMPLETED).then(|| MASTER_PUBLIC_KEY_PLACEHOLDER.to_string());
+    let master_public_key = if dkg_status == STATUS_COMPLETED {
+        Some(extract_completed_master_public_key(&updated_steps)?)
+    } else {
+        None
+    };
 
     sqlx::query(
         r#"
@@ -480,7 +490,7 @@ async fn trigger_dkg_round(
         round,
         status: STATUS_COMPLETED.to_string(),
         dkg_status,
-        public_payload: Some(node_response.public_payload),
+        public_payload: Some(client_public_payload(&node_response.public_payload)),
     }))
 }
 
@@ -489,6 +499,7 @@ async fn call_node_dkg_round(
     session_id: Uuid,
     node_id: &str,
     round: i32,
+    request: &NodeDkgRoundRequest,
 ) -> Result<NodeDkgRoundResponse, DkgError> {
     let node_url = match node_id {
         "node-a" => &state.config.node_a_url,
@@ -497,7 +508,7 @@ async fn call_node_dkg_round(
     };
     let url = format!("{node_url}/internal/dkg/{session_id}/round{round}");
     let response =
-        state.http_client.post(&url).send().await.map_err(|error| {
+        state.http_client.post(&url).json(request).send().await.map_err(|error| {
             DkgError::NodeCallFailed(format!("{node_id} DKG call failed: {error}"))
         })?;
 
@@ -565,6 +576,11 @@ async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     run_sql_file(
         pool,
         include_str!("../../migrations/0002_create_dkg_tables.sql"),
+    )
+    .await?;
+    run_sql_file(
+        pool,
+        include_str!("../../migrations/0003_create_node_dkg_state.sql"),
     )
     .await
 }
@@ -657,6 +673,131 @@ fn validate_round_prerequisites(steps: &[DkgStepRow], round: i32) -> Result<(), 
         )),
         _ => Err(DkgError::InvalidRound(round)),
     }
+}
+
+fn build_node_dkg_round_request(
+    steps: &[DkgStepRow],
+    node_id: &str,
+    round: i32,
+) -> Result<NodeDkgRoundRequest, DkgError> {
+    match round {
+        1 => Ok(NodeDkgRoundRequest::default()),
+        2 => Ok(NodeDkgRoundRequest {
+            peer_round1_packages: peer_round1_packages(steps, node_id)?,
+            peer_round2_packages: BTreeMap::new(),
+        }),
+        3 => Ok(NodeDkgRoundRequest {
+            peer_round1_packages: peer_round1_packages(steps, node_id)?,
+            peer_round2_packages: peer_round2_packages(steps, node_id)?,
+        }),
+        _ => Err(DkgError::InvalidRound(round)),
+    }
+}
+
+fn peer_round1_packages(
+    steps: &[DkgStepRow],
+    current_node_id: &str,
+) -> Result<BTreeMap<String, String>, DkgError> {
+    let mut packages = BTreeMap::new();
+
+    for step in steps
+        .iter()
+        .filter(|step| step.round == 1 && step.node_id != current_node_id)
+    {
+        packages.insert(
+            step.node_id.clone(),
+            required_payload_string(step, "public_package_hex")?,
+        );
+    }
+
+    if packages.len() != NODE_IDS.len() - 1 {
+        return Err(DkgError::TransitionBlocked(
+            "peer round 1 packages are not ready".to_string(),
+        ));
+    }
+
+    Ok(packages)
+}
+
+fn peer_round2_packages(
+    steps: &[DkgStepRow],
+    current_node_id: &str,
+) -> Result<BTreeMap<String, String>, DkgError> {
+    let mut packages = BTreeMap::new();
+
+    for step in steps
+        .iter()
+        .filter(|step| step.round == 2 && step.node_id != current_node_id)
+    {
+        let payload = step_payload(step)?;
+        let package = payload
+            .get("round2_packages")
+            .and_then(|packages| packages.get(current_node_id))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DkgError::TransitionBlocked(format!(
+                    "{} round 2 payload does not include a package for {current_node_id}",
+                    step.node_id
+                ))
+            })?;
+        packages.insert(step.node_id.clone(), package.to_string());
+    }
+
+    if packages.len() != NODE_IDS.len() - 1 {
+        return Err(DkgError::TransitionBlocked(
+            "peer round 2 packages are not ready".to_string(),
+        ));
+    }
+
+    Ok(packages)
+}
+
+fn extract_completed_master_public_key(steps: &[DkgStepRow]) -> Result<String, DkgError> {
+    let mut master_public_keys = Vec::new();
+
+    for step in steps.iter().filter(|step| step.round == 3) {
+        master_public_keys.push(required_payload_string(
+            step,
+            "master_public_key_base58",
+        )?);
+    }
+
+    let first = master_public_keys.first().ok_or_else(|| {
+        DkgError::NodeCallFailed("completed DKG session has no master public key".to_string())
+    })?;
+
+    if master_public_keys.iter().any(|key| key != first) {
+        return Err(DkgError::NodeCallFailed(
+            "TSS nodes returned different master public keys".to_string(),
+        ));
+    }
+
+    Ok(first.clone())
+}
+
+fn required_payload_string(step: &DkgStepRow, field: &str) -> Result<String, DkgError> {
+    step_payload(step)?
+        .get(field)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            DkgError::TransitionBlocked(format!(
+                "{} round {} payload is missing {field}",
+                step.node_id, step.round
+            ))
+        })
+}
+
+fn step_payload(step: &DkgStepRow) -> Result<&Value, DkgError> {
+    step.public_payload
+        .as_ref()
+        .map(|payload| &payload.0)
+        .ok_or_else(|| {
+            DkgError::TransitionBlocked(format!(
+                "{} round {} has no stored public payload",
+                step.node_id, step.round
+            ))
+        })
 }
 
 fn derive_dkg_status(steps: &[DkgStepRow]) -> String {
@@ -800,8 +941,26 @@ fn completed_step_response(session: &DkgSessionRow, step: &DkgStepRow) -> Trigge
         public_payload: step
             .public_payload
             .as_ref()
-            .map(|payload| payload.0.clone()),
+            .map(|payload| client_public_payload(&payload.0)),
     }
+}
+
+fn client_public_payload(payload: &Value) -> Value {
+    if payload.get("kind").and_then(Value::as_str) != Some("frost-dkg-round2") {
+        return payload.clone();
+    }
+
+    let mut redacted = payload.clone();
+
+    if let Some(object) = redacted.as_object_mut() {
+        object.remove("round2_packages");
+        object.insert(
+            "routing_payload".to_string(),
+            Value::String("stored-in-coordinator".to_string()),
+        );
+    }
+
+    redacted
 }
 
 fn db_pool(state: &AppState) -> Result<&PgPool, DkgError> {
@@ -965,23 +1124,158 @@ mod tests {
     }
 
     #[test]
-    fn completed_session_response_keeps_reloaded_master_public_key() {
+    fn completed_round_two_response_redacts_routing_packages_for_clients() {
         let session_id = Uuid::new_v4();
         let session = DkgSessionRow {
             id: session_id,
+            status: STATUS_ROUND_2_IN_PROGRESS.to_string(),
+            master_public_key_base58: None,
+        };
+        let completed_step = DkgStepRow {
+            node_id: "node-a".to_string(),
+            round: 2,
             status: STATUS_COMPLETED.to_string(),
-            master_public_key_base58: Some(MASTER_PUBLIC_KEY_PLACEHOLDER.to_string()),
+            public_payload: Some(SqlxJson(json!({
+                "kind": "frost-dkg-round2",
+                "node_id": "node-a",
+                "round": 2,
+                "round2_packages": {
+                    "node-b": "recipient-specific-package"
+                }
+            }))),
+        };
+
+        let response = completed_step_response(&session, &completed_step);
+        let payload = response
+            .public_payload
+            .expect("completed step should include public payload");
+
+        assert_eq!(payload["kind"], "frost-dkg-round2");
+        assert_eq!(payload["routing_payload"], "stored-in-coordinator");
+        assert!(payload.get("round2_packages").is_none());
+    }
+
+    #[test]
+    fn completed_session_response_keeps_reloaded_master_public_key() {
+        let session_id = Uuid::new_v4();
+        let master_public_key = "7Y9mEJ8h7A4n9Jx9uG2Xo4BfPuTQ3bYQyCMwFQFrost".to_string();
+        let session = DkgSessionRow {
+            id: session_id,
+            status: STATUS_COMPLETED.to_string(),
+            master_public_key_base58: Some(master_public_key.clone()),
         };
 
         let response = session_response_from_rows(session, all_completed_steps());
 
         assert_eq!(response.session_id, session_id);
         assert_eq!(response.status, STATUS_COMPLETED);
-        assert_eq!(
-            response.master_public_key_base58,
-            Some(MASTER_PUBLIC_KEY_PLACEHOLDER.to_string())
-        );
+        assert_eq!(response.master_public_key_base58, Some(master_public_key));
         assert_eq!(response.node_steps.len(), 6);
+    }
+
+    #[test]
+    fn builds_round_two_node_request_from_peer_round_one_payload() {
+        let steps = vec![
+            step_with_payload(
+                "node-a",
+                1,
+                json!({ "public_package_hex": "node-a-round1" }),
+            ),
+            step_with_payload(
+                "node-b",
+                1,
+                json!({ "public_package_hex": "node-b-round1" }),
+            ),
+        ];
+
+        let request = build_node_dkg_round_request(&steps, "node-a", 2)
+            .expect("request should build");
+
+        assert_eq!(
+            request.peer_round1_packages,
+            BTreeMap::from([("node-b".to_string(), "node-b-round1".to_string())])
+        );
+        assert!(request.peer_round2_packages.is_empty());
+    }
+
+    #[test]
+    fn builds_round_three_node_request_from_peer_payloads() {
+        let steps = vec![
+            step_with_payload(
+                "node-a",
+                1,
+                json!({ "public_package_hex": "node-a-round1" }),
+            ),
+            step_with_payload(
+                "node-b",
+                1,
+                json!({ "public_package_hex": "node-b-round1" }),
+            ),
+            step_with_payload(
+                "node-a",
+                2,
+                json!({ "round2_packages": { "node-b": "node-a-to-node-b" } }),
+            ),
+            step_with_payload(
+                "node-b",
+                2,
+                json!({ "round2_packages": { "node-a": "node-b-to-node-a" } }),
+            ),
+        ];
+
+        let request = build_node_dkg_round_request(&steps, "node-a", 3)
+            .expect("request should build");
+
+        assert_eq!(
+            request.peer_round1_packages,
+            BTreeMap::from([("node-b".to_string(), "node-b-round1".to_string())])
+        );
+        assert_eq!(
+            request.peer_round2_packages,
+            BTreeMap::from([("node-b".to_string(), "node-b-to-node-a".to_string())])
+        );
+    }
+
+    #[test]
+    fn extracts_completed_master_public_key_from_matching_round_three_payloads() {
+        let steps = vec![
+            step_with_payload(
+                "node-a",
+                3,
+                json!({ "master_public_key_base58": "matching-master-key" }),
+            ),
+            step_with_payload(
+                "node-b",
+                3,
+                json!({ "master_public_key_base58": "matching-master-key" }),
+            ),
+        ];
+
+        let master_public_key = extract_completed_master_public_key(&steps)
+            .expect("master public key should extract");
+
+        assert_eq!(master_public_key, "matching-master-key");
+    }
+
+    #[test]
+    fn rejects_mismatched_master_public_keys() {
+        let steps = vec![
+            step_with_payload(
+                "node-a",
+                3,
+                json!({ "master_public_key_base58": "node-a-master-key" }),
+            ),
+            step_with_payload(
+                "node-b",
+                3,
+                json!({ "master_public_key_base58": "node-b-master-key" }),
+            ),
+        ];
+
+        let error = extract_completed_master_public_key(&steps)
+            .expect_err("mismatched public keys should fail");
+
+        assert!(matches!(error, DkgError::NodeCallFailed(_)));
     }
 
     fn step(node_id: &str, round: i32, status: &str) -> DkgStepRow {
@@ -990,6 +1284,15 @@ mod tests {
             round,
             status: status.to_string(),
             public_payload: None,
+        }
+    }
+
+    fn step_with_payload(node_id: &str, round: i32, public_payload: Value) -> DkgStepRow {
+        DkgStepRow {
+            node_id: node_id.to_string(),
+            round,
+            status: STATUS_COMPLETED.to_string(),
+            public_payload: Some(SqlxJson(public_payload)),
         }
     }
 

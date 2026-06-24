@@ -311,6 +311,248 @@ main().catch((error) => {
 '
 }
 
+check_phase_three_stack() {
+  docker compose config >/dev/null
+  docker compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  npm --prefix frontend run build
+  docker compose up -d --force-recreate
+  docker compose ps
+
+  if docker compose port node-a 8081 >/tmp/frost-node-a-port.txt 2>&1; then
+    echo "node-a must not publish its internal API port to the host"
+    cat /tmp/frost-node-a-port.txt
+    exit 1
+  fi
+
+  if docker compose port node-b 8081 >/tmp/frost-node-b-port.txt 2>&1; then
+    echo "node-b must not publish its internal API port to the host"
+    cat /tmp/frost-node-b-port.txt
+    exit 1
+  fi
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, options = {}, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+
+      if (response.ok) {
+        return response;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  await fetchWithRetry("http://coordinator:8080/health");
+  await fetchWithRetry("http://node-a:8081/health");
+  await fetchWithRetry("http://node-b:8081/health");
+  const nodes = await fetchWithRetry("http://coordinator:8080/health/nodes").then((response) => response.json());
+  const unreachable = nodes.nodes.filter((node) => !node.reachable);
+
+  if (unreachable.length > 0) {
+    throw new Error(`unreachable nodes: ${JSON.stringify(unreachable)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -c "TRUNCATE coordinator.dkg_sessions CASCADE; TRUNCATE node_a.node_dkg_state; TRUNCATE node_b.node_dkg_state;"
+
+  docker compose exec -T frontend node -e '
+const baseUrl = "http://coordinator:8080";
+const forbiddenFields = [
+  "root_share",
+  "private_share",
+  "nonce_secret",
+  "secret_key",
+  "key_package_ciphertext",
+  "round1_secret_package_ciphertext",
+  "round2_secret_package_ciphertext"
+];
+
+async function request(path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  return { response, body };
+}
+
+async function expectOk(path, options = {}) {
+  const { response, body } = await request(path, options);
+
+  if (!response.ok) {
+    throw new Error(`${path} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+  }
+
+  return body;
+}
+
+async function trigger(sessionId, nodeId, round) {
+  return expectOk(`/api/dkg/sessions/${sessionId}/nodes/${nodeId}/rounds/${round}`, {
+    method: "POST"
+  });
+}
+
+function expectPublicPayload(payload, kind) {
+  if (payload?.public_payload?.kind !== kind) {
+    throw new Error(`expected ${kind}, got ${JSON.stringify(payload)}`);
+  }
+
+  if (payload.public_payload.kind === "phase-2-placeholder-dkg-round") {
+    throw new Error(`placeholder DKG payload leaked into phase 3: ${JSON.stringify(payload)}`);
+  }
+
+  if (kind === "frost-dkg-round2" && payload.public_payload.round2_packages) {
+    throw new Error(`round 2 routing packages must not be exposed to frontend responses: ${JSON.stringify(payload)}`);
+  }
+}
+
+function assertNoForbiddenFields(value) {
+  const encoded = JSON.stringify(value);
+
+  for (const field of forbiddenFields) {
+    if (encoded.includes(field)) {
+      throw new Error(`forbidden private field ${field} appeared in coordinator response: ${encoded}`);
+    }
+  }
+}
+
+async function main() {
+  const session = await expectOk("/api/dkg/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      threshold: 2,
+      participants: ["node-a", "node-b"]
+    })
+  });
+
+  const transcript = [];
+
+  transcript.push(await trigger(session.session_id, "node-a", 1));
+  transcript.push(await trigger(session.session_id, "node-b", 1));
+  transcript.push(await trigger(session.session_id, "node-a", 2));
+  transcript.push(await trigger(session.session_id, "node-b", 2));
+  transcript.push(await trigger(session.session_id, "node-a", 3));
+  transcript.push(await trigger(session.session_id, "node-b", 3));
+
+  expectPublicPayload(transcript[0], "frost-dkg-round1");
+  expectPublicPayload(transcript[1], "frost-dkg-round1");
+  expectPublicPayload(transcript[2], "frost-dkg-round2");
+  expectPublicPayload(transcript[3], "frost-dkg-round2");
+  expectPublicPayload(transcript[4], "frost-dkg-round3");
+  expectPublicPayload(transcript[5], "frost-dkg-round3");
+
+  const completedRound = transcript[5];
+
+  if (completedRound.dkg_status !== "COMPLETED") {
+    throw new Error(`DKG did not complete: ${JSON.stringify(completedRound)}`);
+  }
+
+  const replay = await trigger(session.session_id, "node-a", 3);
+  expectPublicPayload(replay, "frost-dkg-round3");
+
+  const active = await expectOk("/api/dkg/sessions/active");
+
+  if (active.status !== "COMPLETED") {
+    throw new Error(`active DKG session is not completed: ${JSON.stringify(active)}`);
+  }
+
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(active.master_public_key_base58) || active.master_public_key_base58.length < 32) {
+    throw new Error(`master public key is not Base58-like: ${JSON.stringify(active)}`);
+  }
+
+  assertNoForbiddenFields(transcript);
+  assertNoForbiddenFields(replay);
+  assertNoForbiddenFields(active);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+
+  local node_a_private_count
+  node_a_private_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM node_a.node_dkg_state WHERE round1_secret_package_ciphertext LIKE 'v1:%' AND round2_secret_package_ciphertext LIKE 'v1:%' AND key_package_ciphertext LIKE 'v1:%';")"
+  if [[ "$node_a_private_count" != "1" ]]; then
+    echo "node-a did not persist encrypted DKG private material"
+    exit 1
+  fi
+
+  local node_b_private_count
+  node_b_private_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM node_b.node_dkg_state WHERE round1_secret_package_ciphertext LIKE 'v1:%' AND round2_secret_package_ciphertext LIKE 'v1:%' AND key_package_ciphertext LIKE 'v1:%';")"
+  if [[ "$node_b_private_count" != "1" ]]; then
+    echo "node-b did not persist encrypted DKG private material"
+    exit 1
+  fi
+
+  local coordinator_forbidden_count
+  coordinator_forbidden_count="$(docker compose exec -T postgres psql -U "${POSTGRES_USER:-frost}" -d "${POSTGRES_DB:-frost}" -At -c "SELECT count(*) FROM coordinator.dkg_node_steps WHERE public_payload::text ~ '(root_share|private_share|nonce_secret|secret_key|key_package_ciphertext|round1_secret_package_ciphertext|round2_secret_package_ciphertext)';")"
+  if [[ "$coordinator_forbidden_count" != "0" ]]; then
+    echo "coordinator public payloads contain forbidden private field names"
+    exit 1
+  fi
+
+  docker compose restart coordinator node-a node-b
+
+  docker compose exec -T frontend node -e '
+async function fetchWithRetry(url, attempts = 60) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+      const body = text ? JSON.parse(text) : null;
+
+      if (response.ok) {
+        return body;
+      }
+
+      lastError = new Error(`${url} returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  const active = await fetchWithRetry("http://coordinator:8080/api/dkg/sessions/active");
+
+  if (active.status !== "COMPLETED" || !active.master_public_key_base58) {
+    throw new Error(`completed FROST DKG session did not survive restart: ${JSON.stringify(active)}`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+'
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -326,6 +568,11 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_two_stack
+    ;;
+  3)
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_three_stack
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."
