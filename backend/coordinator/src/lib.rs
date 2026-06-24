@@ -2018,9 +2018,7 @@ async fn fetch_latest_blockhash(client: &Client, solana_rpc_url: &str) -> Result
         }))
         .send()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!("Solana blockhash request failed: {error}"))
-        })?;
+        .map_err(|_| solana_rpc_transport_failure("blockhash"))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -2032,9 +2030,7 @@ async fn fetch_latest_blockhash(client: &Client, solana_rpc_url: &str) -> Result
     let payload = response
         .json::<SolanaLatestBlockhashRpcResponse>()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!("Solana blockhash response was invalid: {error}"))
-        })?;
+        .map_err(|_| solana_rpc_decode_failure("blockhash"))?;
 
     if let Some(error) = payload.error {
         return Err(DkgError::SolanaRpcFailed(format!(
@@ -2081,9 +2077,7 @@ async fn send_solana_transaction(
         }))
         .send()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!("Solana sendTransaction request failed: {error}"))
-        })?;
+        .map_err(|_| solana_rpc_transport_failure("sendTransaction"))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -2095,9 +2089,7 @@ async fn send_solana_transaction(
     let payload = response
         .json::<SolanaSendTransactionRpcResponse>()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!("Solana sendTransaction response was invalid: {error}"))
-        })?;
+        .map_err(|_| solana_rpc_decode_failure("sendTransaction"))?;
 
     if let Some(error) = payload.error {
         let public_message = public_error_message(&error.message);
@@ -2146,11 +2138,7 @@ async fn fetch_transaction_confirmation(
         }))
         .send()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!(
-                "Solana confirmation request failed: {error}"
-            ))
-        })?;
+        .map_err(|_| solana_rpc_transport_failure("confirmation"))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -2162,11 +2150,7 @@ async fn fetch_transaction_confirmation(
     let payload = response
         .json::<SolanaSignatureStatusesRpcResponse>()
         .await
-        .map_err(|error| {
-            DkgError::SolanaRpcFailed(format!(
-                "Solana confirmation response was invalid: {error}"
-            ))
-        })?;
+        .map_err(|_| solana_rpc_decode_failure("confirmation"))?;
 
     if let Some(error) = payload.error {
         return Err(DkgError::SolanaRpcFailed(format!(
@@ -2229,6 +2213,14 @@ fn is_mock_solana_rpc(solana_rpc_url: &str) -> bool {
 
 fn explorer_url(transaction_signature: &str) -> String {
     format!("{SOLANA_EXPLORER_DEVNET_URL}/{transaction_signature}?cluster=devnet")
+}
+
+fn solana_rpc_transport_failure(operation: &str) -> DkgError {
+    DkgError::SolanaRpcFailed(format!("Solana {operation} request failed"))
+}
+
+fn solana_rpc_decode_failure(operation: &str) -> DkgError {
+    DkgError::SolanaRpcFailed(format!("Solana {operation} response was invalid"))
 }
 
 fn public_error_message(message: &str) -> String {
@@ -3572,6 +3564,18 @@ mod tests {
         assert!(!message.contains('\n'));
         assert!(message.chars().count() <= 163);
         assert!(message.ends_with("..."));
+    }
+
+    #[test]
+    fn solana_transport_errors_do_not_echo_rpc_urls() {
+        let transport_error = solana_rpc_transport_failure("sendTransaction").to_string();
+        let decode_error = solana_rpc_decode_failure("confirmation").to_string();
+
+        for message in [transport_error, decode_error] {
+            assert!(!message.contains("https://"));
+            assert!(!message.contains("api-key"));
+            assert!(!message.contains("token"));
+        }
     }
 
     #[test]
