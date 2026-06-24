@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -34,6 +34,14 @@ const PUBLIC_DERIVATION_SCHEME: &str = "hd-wallet-edwards-v1";
 const PUBLIC_DERIVATION_CONTEXT_DOMAIN: &str = "frost-template-public-derivation-context-v1";
 const BALANCE_STATUS_AVAILABLE: &str = "AVAILABLE";
 const BALANCE_STATUS_UNAVAILABLE: &str = "UNAVAILABLE";
+const SIGNING_ROUNDS: [i32; 2] = [1, 2];
+const SIGNING_STATUS_PENDING: &str = "PENDING";
+const SIGNING_STATUS_COMMITMENTS_IN_PROGRESS: &str = "COMMITMENTS_IN_PROGRESS";
+const SIGNING_STATUS_COMMITMENTS_READY: &str = "COMMITMENTS_READY";
+const SIGNING_STATUS_SHARES_IN_PROGRESS: &str = "SHARES_IN_PROGRESS";
+const SIGNING_STATUS_READY_TO_AGGREGATE: &str = "READY_TO_AGGREGATE";
+const SIGNING_STATUS_FAILED: &str = STATUS_FAILED;
+const SIGNING_MESSAGE_FORMAT: &str = "frost-template-transfer-intent-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppConfig {
@@ -204,6 +212,80 @@ pub struct WalletBalanceResponse {
     balance_error_message: Option<String>,
 }
 
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CreateSigningRequestRequest {
+    wallet_index: i32,
+    recipient_address_base58: String,
+    amount_lamports: i64,
+}
+
+#[derive(Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+struct SigningRequestQuery {
+    status: Option<String>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SigningRequestListResponse {
+    requests: Vec<SigningRequestResponse>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SigningRequestResponse {
+    request_id: Uuid,
+    dkg_session_id: Uuid,
+    wallet_index: i32,
+    sender_address_base58: String,
+    recipient_address_base58: String,
+    amount_lamports: i64,
+    status: String,
+    message_hash_hex: Option<String>,
+    recent_blockhash: Option<String>,
+    transaction_signature: Option<String>,
+    explorer_url: Option<String>,
+    error_message: Option<String>,
+    created_at: String,
+    updated_at: String,
+    node_steps: Vec<SigningNodeStepResponse>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SigningNodeStepResponse {
+    node_id: String,
+    round: i32,
+    status: String,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct TriggerSigningRoundResponse {
+    request_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: String,
+    signing_status: String,
+    public_payload: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct NodeSigningRoundResponse {
+    request_id: Uuid,
+    node_id: String,
+    round: i32,
+    status: String,
+    public_payload: Value,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+struct NodeSigningRoundRequest {
+    dkg_session_id: Uuid,
+    wallet_index: i32,
+    sender_address_base58: String,
+    recipient_address_base58: String,
+    amount_lamports: i64,
+    message_payload: Value,
+    message_hash_hex: String,
+    signing_commitments: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct DkgSessionRow {
     id: Uuid,
@@ -232,6 +314,33 @@ struct WalletRow {
     balance_error_message: Option<String>,
     balance_checked_at: Option<String>,
     created_at: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct SigningRequestRow {
+    id: Uuid,
+    dkg_session_id: Uuid,
+    wallet_index: i32,
+    sender_address_base58: String,
+    recipient_address_base58: String,
+    amount_lamports: i64,
+    status: String,
+    message_payload: Option<SqlxJson<Value>>,
+    message_hash_hex: Option<String>,
+    recent_blockhash: Option<String>,
+    transaction_signature: Option<String>,
+    explorer_url: Option<String>,
+    error_message: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct SigningStepRow {
+    node_id: String,
+    round: i32,
+    status: String,
+    public_payload: Option<SqlxJson<Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +378,10 @@ enum DkgError {
     TransitionBlocked(String),
     NodeCallFailed(String),
     WalletNotFound(i32),
+    SigningRequestNotFound,
+    InvalidSigningRequest(String),
+    InvalidSigningRound(i32),
+    SigningTransitionBlocked(String),
     WalletDerivationBlocked(String),
     WalletDerivationFailed(String),
     Database(sqlx::Error),
@@ -290,6 +403,10 @@ impl fmt::Display for DkgError {
             Self::WalletNotFound(wallet_index) => {
                 write!(f, "wallet index {wallet_index} not found")
             }
+            Self::SigningRequestNotFound => write!(f, "signing request not found"),
+            Self::InvalidSigningRequest(message) => write!(f, "{message}"),
+            Self::InvalidSigningRound(round) => write!(f, "unsupported signing round {round}"),
+            Self::SigningTransitionBlocked(message) => write!(f, "{message}"),
             Self::WalletDerivationBlocked(message) => write!(f, "{message}"),
             Self::WalletDerivationFailed(message) => write!(f, "{message}"),
             Self::Database(error) => write!(f, "database error: {error}"),
@@ -312,9 +429,15 @@ impl IntoResponse for DkgError {
             Self::InvalidCreateRequest(_)
             | Self::InvalidNode(_)
             | Self::InvalidRound(_)
-            | Self::InvalidWalletIndex(_) => StatusCode::BAD_REQUEST,
-            Self::SessionNotFound | Self::WalletNotFound(_) => StatusCode::NOT_FOUND,
-            Self::TransitionBlocked(_) | Self::WalletDerivationBlocked(_) => StatusCode::CONFLICT,
+            | Self::InvalidWalletIndex(_)
+            | Self::InvalidSigningRequest(_)
+            | Self::InvalidSigningRound(_) => StatusCode::BAD_REQUEST,
+            Self::SessionNotFound | Self::WalletNotFound(_) | Self::SigningRequestNotFound => {
+                StatusCode::NOT_FOUND
+            }
+            Self::TransitionBlocked(_)
+            | Self::WalletDerivationBlocked(_)
+            | Self::SigningTransitionBlocked(_) => StatusCode::CONFLICT,
             Self::NodeCallFailed(_) => StatusCode::BAD_GATEWAY,
             Self::WalletDerivationFailed(_) | Self::Database(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -348,8 +471,17 @@ pub fn router_with_pool(config: AppConfig, db_pool: Option<PgPool>) -> Router {
         .route("/api/dkg/sessions/active", get(get_active_dkg_session))
         .route("/api/wallets", get(list_wallets).post(create_wallet))
         .route(
+            "/api/signing-requests",
+            get(list_signing_requests).post(create_signing_request),
+        )
+        .route("/api/signing-requests/{request_id}", get(get_signing_request))
+        .route(
             "/api/wallets/{wallet_index}/balance",
             get(refresh_wallet_balance),
+        )
+        .route(
+            "/api/signing-requests/{request_id}/nodes/{node_id}/rounds/{round}",
+            post(trigger_signing_round),
         )
         .route(
             "/api/dkg/sessions/{session_id}/nodes/{node_id}/rounds/{round}",
@@ -501,6 +633,213 @@ async fn refresh_wallet_balance(
         balance_lamports: updated_wallet.balance_lamports,
         balance_status: updated_wallet.balance_status,
         balance_error_message: updated_wallet.balance_error_message,
+    }))
+}
+
+async fn create_signing_request(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateSigningRequestRequest>,
+) -> Result<Json<SigningRequestResponse>, DkgError> {
+    validate_create_signing_request(&payload)?;
+    let pool = db_pool(&state)?;
+    let wallet = fetch_wallet(pool, payload.wallet_index)
+        .await?
+        .ok_or(DkgError::WalletNotFound(payload.wallet_index))?;
+    let request_id = Uuid::new_v4();
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO coordinator.signing_requests
+            (id, wallet_index, sender_address_base58, recipient_address_base58, amount_lamports, status)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(request_id)
+    .bind(payload.wallet_index)
+    .bind(&wallet.address_base58)
+    .bind(&payload.recipient_address_base58)
+    .bind(payload.amount_lamports)
+    .bind(SIGNING_STATUS_PENDING)
+    .execute(&mut *transaction)
+    .await?;
+
+    for node_id in NODE_IDS {
+        for round in SIGNING_ROUNDS {
+            sqlx::query(
+                r#"
+                INSERT INTO coordinator.signing_node_steps
+                    (request_id, node_id, round, status)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(request_id)
+            .bind(node_id)
+            .bind(round)
+            .bind(STATUS_NOT_STARTED)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
+
+    transaction.commit().await?;
+
+    let request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    Ok(Json(fetch_signing_request_response(pool, request).await?))
+}
+
+async fn list_signing_requests(
+    State(state): State<AppState>,
+    Query(query): Query<SigningRequestQuery>,
+) -> Result<Json<SigningRequestListResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let requests = fetch_signing_requests(pool, query.status.as_deref()).await?;
+    let mut responses = Vec::with_capacity(requests.len());
+
+    for request in requests {
+        responses.push(fetch_signing_request_response(pool, request).await?);
+    }
+
+    Ok(Json(SigningRequestListResponse { requests: responses }))
+}
+
+async fn get_signing_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+) -> Result<Json<SigningRequestResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    Ok(Json(fetch_signing_request_response(pool, request).await?))
+}
+
+async fn trigger_signing_round(
+    State(state): State<AppState>,
+    Path((request_id, node_id, round)): Path<(Uuid, String, i32)>,
+) -> Result<Json<TriggerSigningRoundResponse>, DkgError> {
+    validate_node_id(&node_id)?;
+    validate_signing_round(round)?;
+
+    let pool = db_pool(&state)?;
+    let request = fetch_signing_request(pool, request_id)
+        .await?
+        .ok_or(DkgError::SigningRequestNotFound)?;
+    validate_signing_request_can_transition(&request)?;
+    let steps = fetch_signing_steps(pool, request_id).await?;
+    let step = steps
+        .iter()
+        .find(|step| step.node_id == node_id && step.round == round)
+        .ok_or(DkgError::SigningRequestNotFound)?;
+
+    if step.status == STATUS_COMPLETED {
+        if round == 1 {
+            return Ok(Json(completed_signing_step_response(&request, step)));
+        }
+
+        return Err(DkgError::SigningTransitionBlocked(format!(
+            "{node_id} signing round 2 nonce has already been consumed"
+        )));
+    }
+
+    validate_signing_round_prerequisites(&steps, round)?;
+
+    if claim_signing_step(pool, request_id, &node_id, round)
+        .await?
+        .is_none()
+    {
+        let current_request = fetch_signing_request(pool, request_id)
+            .await?
+            .ok_or(DkgError::SigningRequestNotFound)?;
+        let current_step = fetch_signing_step(pool, request_id, &node_id, round)
+            .await?
+            .ok_or(DkgError::SigningRequestNotFound)?;
+
+        if current_step.status == STATUS_COMPLETED && round == 1 {
+            return Ok(Json(completed_signing_step_response(
+                &current_request,
+                &current_step,
+            )));
+        }
+
+        if current_step.status == STATUS_COMPLETED && round == 2 {
+            return Err(DkgError::SigningTransitionBlocked(format!(
+                "{node_id} signing round 2 nonce has already been consumed"
+            )));
+        }
+
+        return Err(DkgError::SigningTransitionBlocked(format!(
+            "{node_id} signing round {round} is already {}",
+            current_step.status
+        )));
+    }
+
+    let node_request =
+        build_node_signing_round_request(pool, &request, &steps, &node_id, round).await?;
+    let node_response =
+        call_node_signing_round(&state, request_id, &node_id, round, &node_request).await;
+    let node_response = match node_response {
+        Ok(node_response) => node_response,
+        Err(error) => {
+            mark_signing_step_failed(pool, request_id, &node_id, round, &error.to_string()).await?;
+            return Err(error);
+        }
+    };
+
+    if node_response.request_id != request_id
+        || node_response.node_id != node_id
+        || node_response.round != round
+        || node_response.status != STATUS_COMPLETED
+    {
+        let error = DkgError::NodeCallFailed(
+            "TSS node returned a signing round response that does not match the request"
+                .to_string(),
+        );
+        mark_signing_step_failed(pool, request_id, &node_id, round, &error.to_string()).await?;
+        return Err(error);
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_node_steps
+        SET status = $1, public_payload = $2, error_message = NULL, completed_at = now(), updated_at = now()
+        WHERE request_id = $3 AND node_id = $4 AND round = $5
+        "#,
+    )
+    .bind(STATUS_COMPLETED)
+    .bind(SqlxJson(node_response.public_payload.clone()))
+    .bind(request_id)
+    .bind(&node_id)
+    .bind(round)
+    .execute(pool)
+    .await?;
+
+    let updated_steps = fetch_signing_steps(pool, request_id).await?;
+    let signing_status = derive_signing_status(&updated_steps);
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1, updated_at = now()
+        WHERE id = $2
+        "#,
+    )
+    .bind(&signing_status)
+    .bind(request_id)
+    .execute(pool)
+    .await?;
+
+    Ok(Json(TriggerSigningRoundResponse {
+        request_id,
+        node_id,
+        round,
+        status: STATUS_COMPLETED.to_string(),
+        signing_status,
+        public_payload: Some(node_response.public_payload),
     }))
 }
 
@@ -743,6 +1082,45 @@ async fn call_node_dkg_round(
         })
 }
 
+async fn call_node_signing_round(
+    state: &AppState,
+    request_id: Uuid,
+    node_id: &str,
+    round: i32,
+    request: &NodeSigningRoundRequest,
+) -> Result<NodeSigningRoundResponse, DkgError> {
+    let node_url = match node_id {
+        "node-a" => &state.config.node_a_url,
+        "node-b" => &state.config.node_b_url,
+        _ => return Err(DkgError::InvalidNode(node_id.to_string())),
+    };
+    let url = format!("{node_url}/internal/signing/{request_id}/round{round}");
+    let response = state
+        .http_client
+        .post(&url)
+        .json(request)
+        .send()
+        .await
+        .map_err(|error| {
+            DkgError::NodeCallFailed(format!("{node_id} signing call failed: {error}"))
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|_| "".to_string());
+        return Err(DkgError::NodeCallFailed(format!(
+            "{node_id} signing call returned {status}: {body}"
+        )));
+    }
+
+    response
+        .json::<NodeSigningRoundResponse>()
+        .await
+        .map_err(|error| {
+            DkgError::NodeCallFailed(format!("{node_id} signing response was invalid: {error}"))
+        })
+}
+
 async fn mark_step_failed(
     pool: &PgPool,
     session_id: Uuid,
@@ -762,6 +1140,44 @@ async fn mark_step_failed(
     .bind(session_id)
     .bind(node_id)
     .bind(round)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn mark_signing_step_failed(
+    pool: &PgPool,
+    request_id: Uuid,
+    node_id: &str,
+    round: i32,
+    error_message: &str,
+) -> Result<(), DkgError> {
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_node_steps
+        SET status = $1, error_message = $2, updated_at = now()
+        WHERE request_id = $3 AND node_id = $4 AND round = $5
+        "#,
+    )
+    .bind(STATUS_FAILED)
+    .bind(error_message)
+    .bind(request_id)
+    .bind(node_id)
+    .bind(round)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET status = $1, error_message = $2, updated_at = now()
+        WHERE id = $3
+        "#,
+    )
+    .bind(SIGNING_STATUS_FAILED)
+    .bind(error_message)
+    .bind(request_id)
     .execute(pool)
     .await?;
 
@@ -802,6 +1218,11 @@ async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
         pool,
         include_str!("../../migrations/0004_create_wallet_tables.sql"),
     )
+    .await?;
+    run_sql_file(
+        pool,
+        include_str!("../../migrations/0005_create_signing_tables.sql"),
+    )
     .await
 }
 
@@ -833,6 +1254,34 @@ async fn claim_dkg_step(
     .map_err(DkgError::from)
 }
 
+async fn claim_signing_step(
+    pool: &PgPool,
+    request_id: Uuid,
+    node_id: &str,
+    round: i32,
+) -> Result<Option<SigningStepRow>, DkgError> {
+    sqlx::query_as::<_, SigningStepRow>(
+        r#"
+        UPDATE coordinator.signing_node_steps
+        SET status = $1, error_message = NULL, updated_at = now()
+        WHERE request_id = $2
+          AND node_id = $3
+          AND round = $4
+          AND status IN ($5, $6)
+        RETURNING node_id, round, status, public_payload
+        "#,
+    )
+    .bind(STATUS_RUNNING)
+    .bind(request_id)
+    .bind(node_id)
+    .bind(round)
+    .bind(STATUS_NOT_STARTED)
+    .bind(STATUS_FAILED)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
 async fn run_sql_file(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     for statement in sql
         .split(';')
@@ -843,6 +1292,187 @@ async fn run_sql_file(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     }
 
     Ok(())
+}
+
+async fn fetch_signing_request(
+    pool: &PgPool,
+    request_id: Uuid,
+) -> Result<Option<SigningRequestRow>, DkgError> {
+    sqlx::query_as::<_, SigningRequestRow>(
+        r#"
+        SELECT
+            sr.id,
+            w.dkg_session_id,
+            sr.wallet_index,
+            sr.sender_address_base58,
+            sr.recipient_address_base58,
+            sr.amount_lamports,
+            sr.status,
+            sr.message_payload,
+            sr.message_hash_hex,
+            sr.recent_blockhash,
+            sr.transaction_signature,
+            sr.explorer_url,
+            sr.error_message,
+            sr.created_at::text AS created_at,
+            sr.updated_at::text AS updated_at
+        FROM coordinator.signing_requests sr
+        JOIN coordinator.wallets w USING (wallet_index)
+        WHERE sr.id = $1
+        "#,
+    )
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_signing_requests(
+    pool: &PgPool,
+    status_filter: Option<&str>,
+) -> Result<Vec<SigningRequestRow>, DkgError> {
+    let normalized_status = status_filter.map(|status| status.trim().to_ascii_uppercase());
+
+    if normalized_status.as_deref() == Some("PENDING") {
+        return sqlx::query_as::<_, SigningRequestRow>(
+            r#"
+            SELECT
+                sr.id,
+                w.dkg_session_id,
+                sr.wallet_index,
+                sr.sender_address_base58,
+                sr.recipient_address_base58,
+                sr.amount_lamports,
+                sr.status,
+                sr.message_payload,
+                sr.message_hash_hex,
+                sr.recent_blockhash,
+                sr.transaction_signature,
+                sr.explorer_url,
+                sr.error_message,
+                sr.created_at::text AS created_at,
+                sr.updated_at::text AS updated_at
+            FROM coordinator.signing_requests sr
+            JOIN coordinator.wallets w USING (wallet_index)
+            WHERE sr.status IN ($1, $2, $3, $4, $5)
+            ORDER BY sr.created_at DESC
+            "#,
+        )
+        .bind(SIGNING_STATUS_PENDING)
+        .bind(SIGNING_STATUS_COMMITMENTS_IN_PROGRESS)
+        .bind(SIGNING_STATUS_COMMITMENTS_READY)
+        .bind(SIGNING_STATUS_SHARES_IN_PROGRESS)
+        .bind(SIGNING_STATUS_READY_TO_AGGREGATE)
+        .fetch_all(pool)
+        .await
+        .map_err(DkgError::from);
+    }
+
+    if let Some(status) = normalized_status {
+        return sqlx::query_as::<_, SigningRequestRow>(
+            r#"
+            SELECT
+                sr.id,
+                w.dkg_session_id,
+                sr.wallet_index,
+                sr.sender_address_base58,
+                sr.recipient_address_base58,
+                sr.amount_lamports,
+                sr.status,
+                sr.message_payload,
+                sr.message_hash_hex,
+                sr.recent_blockhash,
+                sr.transaction_signature,
+                sr.explorer_url,
+                sr.error_message,
+                sr.created_at::text AS created_at,
+                sr.updated_at::text AS updated_at
+            FROM coordinator.signing_requests sr
+            JOIN coordinator.wallets w USING (wallet_index)
+            WHERE sr.status = $1
+            ORDER BY sr.created_at DESC
+            "#,
+        )
+        .bind(status)
+        .fetch_all(pool)
+        .await
+        .map_err(DkgError::from);
+    }
+
+    sqlx::query_as::<_, SigningRequestRow>(
+        r#"
+        SELECT
+            sr.id,
+            w.dkg_session_id,
+            sr.wallet_index,
+            sr.sender_address_base58,
+            sr.recipient_address_base58,
+            sr.amount_lamports,
+            sr.status,
+            sr.message_payload,
+            sr.message_hash_hex,
+            sr.recent_blockhash,
+            sr.transaction_signature,
+            sr.explorer_url,
+            sr.error_message,
+            sr.created_at::text AS created_at,
+            sr.updated_at::text AS updated_at
+        FROM coordinator.signing_requests sr
+        JOIN coordinator.wallets w USING (wallet_index)
+        ORDER BY sr.created_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_signing_steps(
+    pool: &PgPool,
+    request_id: Uuid,
+) -> Result<Vec<SigningStepRow>, DkgError> {
+    sqlx::query_as::<_, SigningStepRow>(
+        r#"
+        SELECT node_id, round, status, public_payload
+        FROM coordinator.signing_node_steps
+        WHERE request_id = $1
+        ORDER BY node_id, round
+        "#,
+    )
+    .bind(request_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_signing_step(
+    pool: &PgPool,
+    request_id: Uuid,
+    node_id: &str,
+    round: i32,
+) -> Result<Option<SigningStepRow>, DkgError> {
+    sqlx::query_as::<_, SigningStepRow>(
+        r#"
+        SELECT node_id, round, status, public_payload
+        FROM coordinator.signing_node_steps
+        WHERE request_id = $1 AND node_id = $2 AND round = $3
+        "#,
+    )
+    .bind(request_id)
+    .bind(node_id)
+    .bind(round)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_signing_request_response(
+    pool: &PgPool,
+    request: SigningRequestRow,
+) -> Result<SigningRequestResponse, DkgError> {
+    let steps = fetch_signing_steps(pool, request.id).await?;
+
+    Ok(signing_request_response_from_rows(request, steps))
 }
 
 async fn completed_wallet_session(pool: &PgPool) -> Result<DkgSessionRow, DkgError> {
@@ -1154,6 +1784,36 @@ impl From<WalletRow> for WalletResponse {
     }
 }
 
+fn signing_request_response_from_rows(
+    row: SigningRequestRow,
+    steps: Vec<SigningStepRow>,
+) -> SigningRequestResponse {
+    SigningRequestResponse {
+        request_id: row.id,
+        dkg_session_id: row.dkg_session_id,
+        wallet_index: row.wallet_index,
+        sender_address_base58: row.sender_address_base58,
+        recipient_address_base58: row.recipient_address_base58,
+        amount_lamports: row.amount_lamports,
+        status: row.status,
+        message_hash_hex: row.message_hash_hex,
+        recent_blockhash: row.recent_blockhash,
+        transaction_signature: row.transaction_signature,
+        explorer_url: row.explorer_url,
+        error_message: row.error_message,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        node_steps: steps
+            .into_iter()
+            .map(|step| SigningNodeStepResponse {
+                node_id: step.node_id,
+                round: step.round,
+                status: step.status,
+            })
+            .collect(),
+    }
+}
+
 fn validate_create_request(payload: &CreateDkgSessionRequest) -> Result<(), DkgError> {
     if payload.threshold != 2 {
         return Err(DkgError::InvalidCreateRequest(
@@ -1167,6 +1827,44 @@ fn validate_create_request(payload: &CreateDkgSessionRequest) -> Result<(), DkgE
     if participants != NODE_IDS {
         return Err(DkgError::InvalidCreateRequest(
             "participants must be exactly node-a and node-b".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_create_signing_request(
+    payload: &CreateSigningRequestRequest,
+) -> Result<(), DkgError> {
+    validate_wallet_index(payload.wallet_index)?;
+
+    if payload.amount_lamports <= 0 {
+        return Err(DkgError::InvalidSigningRequest(
+            "amount_lamports must be positive".to_string(),
+        ));
+    }
+
+    let recipient_bytes = bs58::decode(&payload.recipient_address_base58)
+        .into_vec()
+        .map_err(|error| {
+            DkgError::InvalidSigningRequest(format!(
+                "recipient_address_base58 must be valid Base58: {error}"
+            ))
+        })?;
+
+    if recipient_bytes.len() != 32 {
+        return Err(DkgError::InvalidSigningRequest(
+            "recipient_address_base58 must decode to 32 bytes".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_signing_request_can_transition(request: &SigningRequestRow) -> Result<(), DkgError> {
+    if request.status == SIGNING_STATUS_FAILED {
+        return Err(DkgError::SigningTransitionBlocked(
+            "signing request is FAILED; create a new request".to_string(),
         ));
     }
 
@@ -1189,6 +1887,14 @@ fn validate_round(round: i32) -> Result<(), DkgError> {
     }
 }
 
+fn validate_signing_round(round: i32) -> Result<(), DkgError> {
+    if SIGNING_ROUNDS.contains(&round) {
+        Ok(())
+    } else {
+        Err(DkgError::InvalidSigningRound(round))
+    }
+}
+
 fn validate_round_prerequisites(steps: &[DkgStepRow], round: i32) -> Result<(), DkgError> {
     match round {
         1 => Ok(()),
@@ -1201,6 +1907,20 @@ fn validate_round_prerequisites(steps: &[DkgStepRow], round: i32) -> Result<(), 
             "round 3 requires both round 2 steps to be completed".to_string(),
         )),
         _ => Err(DkgError::InvalidRound(round)),
+    }
+}
+
+fn validate_signing_round_prerequisites(
+    steps: &[SigningStepRow],
+    round: i32,
+) -> Result<(), DkgError> {
+    match round {
+        1 => Ok(()),
+        2 if all_signing_round_steps_completed(steps, 1) => Ok(()),
+        2 => Err(DkgError::SigningTransitionBlocked(
+            "signing round 2 requires both round 1 commitments to be completed".to_string(),
+        )),
+        _ => Err(DkgError::InvalidSigningRound(round)),
     }
 }
 
@@ -1221,6 +1941,111 @@ fn build_node_dkg_round_request(
         }),
         _ => Err(DkgError::InvalidRound(round)),
     }
+}
+
+async fn build_node_signing_round_request(
+    pool: &PgPool,
+    request: &SigningRequestRow,
+    steps: &[SigningStepRow],
+    _node_id: &str,
+    round: i32,
+) -> Result<NodeSigningRoundRequest, DkgError> {
+    let (message_payload, message_hash_hex) = if round == 2 {
+        ensure_signing_message(pool, request).await?
+    } else {
+        (Value::Null, String::new())
+    };
+
+    Ok(NodeSigningRoundRequest {
+        dkg_session_id: request.dkg_session_id,
+        wallet_index: request.wallet_index,
+        sender_address_base58: request.sender_address_base58.clone(),
+        recipient_address_base58: request.recipient_address_base58.clone(),
+        amount_lamports: request.amount_lamports,
+        message_payload,
+        message_hash_hex,
+        signing_commitments: if round == 2 {
+            signing_commitments(steps)?
+        } else {
+            BTreeMap::new()
+        },
+    })
+}
+
+async fn ensure_signing_message(
+    pool: &PgPool,
+    request: &SigningRequestRow,
+) -> Result<(Value, String), DkgError> {
+    if let (Some(payload), Some(message_hash_hex)) =
+        (&request.message_payload, &request.message_hash_hex)
+    {
+        return Ok((payload.0.clone(), message_hash_hex.clone()));
+    }
+
+    let canonical_message = canonical_transfer_message(request);
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_message.as_bytes());
+    let message_hash_hex = hex_string(&hasher.finalize());
+    let payload = json!({
+        "format": SIGNING_MESSAGE_FORMAT,
+        "request_id": request.id,
+        "wallet_index": request.wallet_index,
+        "sender_address_base58": request.sender_address_base58,
+        "recipient_address_base58": request.recipient_address_base58,
+        "amount_lamports": request.amount_lamports,
+        "canonical_message": canonical_message
+    });
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.signing_requests
+        SET message_payload = COALESCE(message_payload, $1),
+            message_hash_hex = COALESCE(message_hash_hex, $2),
+            updated_at = now()
+        WHERE id = $3
+        "#,
+    )
+    .bind(SqlxJson(payload.clone()))
+    .bind(&message_hash_hex)
+    .bind(request.id)
+    .execute(pool)
+    .await?;
+
+    Ok((payload, message_hash_hex))
+}
+
+fn canonical_transfer_message(request: &SigningRequestRow) -> String {
+    [
+        SIGNING_MESSAGE_FORMAT.to_string(),
+        format!("request_id={}", request.id),
+        format!("wallet_index={}", request.wallet_index),
+        format!("sender_address_base58={}", request.sender_address_base58),
+        format!(
+            "recipient_address_base58={}",
+            request.recipient_address_base58
+        ),
+        format!("amount_lamports={}", request.amount_lamports),
+    ]
+    .join("\n")
+}
+
+fn signing_commitments(steps: &[SigningStepRow]) -> Result<BTreeMap<String, String>, DkgError> {
+    let mut commitments = BTreeMap::new();
+
+    for step in steps.iter().filter(|step| step.round == 1) {
+        commitments.insert(
+            step.node_id.clone(),
+            signing_required_payload_string(step, "commitments_hex")?,
+        );
+    }
+
+    if commitments.len() != NODE_IDS.len() {
+        return Err(DkgError::SigningTransitionBlocked(
+            "signing commitments are not ready".to_string(),
+        ));
+    }
+
+    Ok(commitments)
 }
 
 fn peer_round1_packages(
@@ -1326,6 +2151,34 @@ fn step_payload(step: &DkgStepRow) -> Result<&Value, DkgError> {
         })
 }
 
+fn signing_required_payload_string(
+    step: &SigningStepRow,
+    field: &str,
+) -> Result<String, DkgError> {
+    signing_step_payload(step)?
+        .get(field)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            DkgError::SigningTransitionBlocked(format!(
+                "{} signing round {} payload is missing {field}",
+                step.node_id, step.round
+            ))
+        })
+}
+
+fn signing_step_payload(step: &SigningStepRow) -> Result<&Value, DkgError> {
+    step.public_payload
+        .as_ref()
+        .map(|payload| &payload.0)
+        .ok_or_else(|| {
+            DkgError::SigningTransitionBlocked(format!(
+                "{} signing round {} has no stored public payload",
+                step.node_id, step.round
+            ))
+        })
+}
+
 fn derive_dkg_status(steps: &[DkgStepRow]) -> String {
     if all_round_steps_completed(steps, 3) {
         return STATUS_COMPLETED.to_string();
@@ -1349,6 +2202,23 @@ fn derive_dkg_status(steps: &[DkgStepRow]) -> String {
     STATUS_NOT_STARTED.to_string()
 }
 
+fn derive_signing_status(steps: &[SigningStepRow]) -> String {
+    if all_signing_round_steps_completed(steps, 2) {
+        return SIGNING_STATUS_READY_TO_AGGREGATE.to_string();
+    }
+    if any_signing_round_step_started(steps, 2) {
+        return SIGNING_STATUS_SHARES_IN_PROGRESS.to_string();
+    }
+    if all_signing_round_steps_completed(steps, 1) {
+        return SIGNING_STATUS_COMMITMENTS_READY.to_string();
+    }
+    if any_signing_round_step_started(steps, 1) {
+        return SIGNING_STATUS_COMMITMENTS_IN_PROGRESS.to_string();
+    }
+
+    SIGNING_STATUS_PENDING.to_string()
+}
+
 fn all_round_steps_completed(steps: &[DkgStepRow], round: i32) -> bool {
     let round_steps: Vec<&DkgStepRow> = steps.iter().filter(|step| step.round == round).collect();
 
@@ -1358,7 +2228,23 @@ fn all_round_steps_completed(steps: &[DkgStepRow], round: i32) -> bool {
             .all(|step| step.status == STATUS_COMPLETED)
 }
 
+fn all_signing_round_steps_completed(steps: &[SigningStepRow], round: i32) -> bool {
+    let round_steps: Vec<&SigningStepRow> =
+        steps.iter().filter(|step| step.round == round).collect();
+
+    round_steps.len() == NODE_IDS.len()
+        && round_steps
+            .iter()
+            .all(|step| step.status == STATUS_COMPLETED)
+}
+
 fn any_round_step_started(steps: &[DkgStepRow], round: i32) -> bool {
+    steps
+        .iter()
+        .any(|step| step.round == round && step.status != STATUS_NOT_STARTED)
+}
+
+fn any_signing_round_step_started(steps: &[SigningStepRow], round: i32) -> bool {
     steps
         .iter()
         .any(|step| step.round == round && step.status != STATUS_NOT_STARTED)
@@ -1471,6 +2357,20 @@ fn completed_step_response(session: &DkgSessionRow, step: &DkgStepRow) -> Trigge
     }
 }
 
+fn completed_signing_step_response(
+    request: &SigningRequestRow,
+    step: &SigningStepRow,
+) -> TriggerSigningRoundResponse {
+    TriggerSigningRoundResponse {
+        request_id: request.id,
+        node_id: step.node_id.clone(),
+        round: step.round,
+        status: STATUS_COMPLETED.to_string(),
+        signing_status: request.status.clone(),
+        public_payload: step.public_payload.as_ref().map(|payload| payload.0.clone()),
+    }
+}
+
 fn client_public_payload(payload: &Value) -> Value {
     if payload.get("kind").and_then(Value::as_str) != Some("frost-dkg-round2") {
         return payload.clone();
@@ -1487,6 +2387,18 @@ fn client_public_payload(payload: &Value) -> Value {
     }
 
     redacted
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+
+    output
 }
 
 fn db_pool(state: &AppState) -> Result<&PgPool, DkgError> {
@@ -1613,6 +2525,92 @@ mod tests {
         let steps = all_completed_steps();
 
         assert_eq!(derive_dkg_status(&steps), STATUS_COMPLETED);
+    }
+
+    #[test]
+    fn blocks_signing_round_two_until_both_commitments_complete() {
+        let steps = vec![
+            signing_step("node-a", 1, STATUS_COMPLETED),
+            signing_step("node-b", 1, STATUS_NOT_STARTED),
+            signing_step("node-a", 2, STATUS_NOT_STARTED),
+            signing_step("node-b", 2, STATUS_NOT_STARTED),
+        ];
+
+        let error = validate_signing_round_prerequisites(&steps, 2)
+            .expect_err("round 2 should wait for both signing commitments");
+
+        assert!(matches!(error, DkgError::SigningTransitionBlocked(_)));
+    }
+
+    #[test]
+    fn derives_ready_to_aggregate_after_both_signature_shares_complete() {
+        let steps = vec![
+            signing_step("node-a", 1, STATUS_COMPLETED),
+            signing_step("node-b", 1, STATUS_COMPLETED),
+            signing_step("node-a", 2, STATUS_COMPLETED),
+            signing_step("node-b", 2, STATUS_COMPLETED),
+        ];
+
+        assert_eq!(
+            derive_signing_status(&steps),
+            SIGNING_STATUS_READY_TO_AGGREGATE
+        );
+    }
+
+    #[test]
+    fn signing_commitments_require_both_node_payloads() {
+        let steps = vec![
+            signing_step_with_payload(
+                "node-a",
+                1,
+                json!({ "commitments_hex": "node-a-commitment" }),
+            ),
+            signing_step_with_payload(
+                "node-b",
+                1,
+                json!({ "commitments_hex": "node-b-commitment" }),
+            ),
+        ];
+
+        let commitments = signing_commitments(&steps).expect("commitments should collect");
+
+        assert_eq!(
+            commitments,
+            BTreeMap::from([
+                ("node-a".to_string(), "node-a-commitment".to_string()),
+                ("node-b".to_string(), "node-b-commitment".to_string())
+            ])
+        );
+    }
+
+    #[test]
+    fn validates_signing_transfer_inputs() {
+        let request = CreateSigningRequestRequest {
+            wallet_index: 0,
+            recipient_address_base58: bs58::encode([1_u8; 32]).into_string(),
+            amount_lamports: 1,
+        };
+
+        validate_create_signing_request(&request).expect("request should be valid");
+
+        let invalid_amount = CreateSigningRequestRequest {
+            amount_lamports: 0,
+            ..request.clone()
+        };
+        let error = validate_create_signing_request(&invalid_amount)
+            .expect_err("zero amount should fail");
+
+        assert!(matches!(error, DkgError::InvalidSigningRequest(_)));
+    }
+
+    #[test]
+    fn failed_signing_request_blocks_later_transitions() {
+        let request = signing_request_row_with_status(SIGNING_STATUS_FAILED);
+
+        let error = validate_signing_request_can_transition(&request)
+            .expect_err("failed signing requests should not transition");
+
+        assert!(matches!(error, DkgError::SigningTransitionBlocked(_)));
     }
 
     #[test]
@@ -1893,6 +2891,48 @@ mod tests {
             round,
             status: STATUS_COMPLETED.to_string(),
             public_payload: Some(SqlxJson(public_payload)),
+        }
+    }
+
+    fn signing_step(node_id: &str, round: i32, status: &str) -> SigningStepRow {
+        SigningStepRow {
+            node_id: node_id.to_string(),
+            round,
+            status: status.to_string(),
+            public_payload: None,
+        }
+    }
+
+    fn signing_step_with_payload(
+        node_id: &str,
+        round: i32,
+        public_payload: Value,
+    ) -> SigningStepRow {
+        SigningStepRow {
+            node_id: node_id.to_string(),
+            round,
+            status: STATUS_COMPLETED.to_string(),
+            public_payload: Some(SqlxJson(public_payload)),
+        }
+    }
+
+    fn signing_request_row_with_status(status: &str) -> SigningRequestRow {
+        SigningRequestRow {
+            id: Uuid::new_v4(),
+            dkg_session_id: Uuid::new_v4(),
+            wallet_index: 0,
+            sender_address_base58: bs58::encode([2_u8; 32]).into_string(),
+            recipient_address_base58: bs58::encode([3_u8; 32]).into_string(),
+            amount_lamports: 1,
+            status: status.to_string(),
+            message_payload: None,
+            message_hash_hex: None,
+            recent_blockhash: None,
+            transaction_signature: None,
+            explorer_url: None,
+            error_message: None,
+            created_at: "2026-06-24 00:00:00+00".to_string(),
+            updated_at: "2026-06-24 00:00:00+00".to_string(),
         }
     }
 

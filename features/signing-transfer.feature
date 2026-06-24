@@ -31,6 +31,30 @@ Feature: Step-by-step FROST signing and Solana transfer
     Then the coordinator should reject the request
     And no nonce should be consumed for Round 2
 
+  Scenario: Reject a signing request for an unknown wallet
+    When I create a transfer request from wallet index 99
+    Then the coordinator should reject the request
+    And no signing request should be created
+
+  Scenario: Re-trigger Signing Round 1 without creating a second nonce
+    Given a signing request is "PENDING"
+    And Node A Signing Round 1 is "COMPLETED"
+    When I trigger Signing Round 1 for Node A again
+    Then Node A Signing Round 1 should still be "COMPLETED"
+    And the original public nonce commitment should be returned
+
+  Scenario: Reject Signing Round 2 nonce reuse
+    Given Node A Signing Round 2 is "COMPLETED"
+    When I trigger Signing Round 2 for Node A again
+    Then the coordinator should reject the request
+    And Node A should not reuse the consumed nonce
+
+  Scenario: Distinguish multiple pending signing requests
+    Given wallet index 0 exists
+    When I create two transfer requests from wallet index 0
+    Then both signing requests should appear in the request list
+    And each request should have its own request id and node step statuses
+
   Scenario: Broadcast and confirm a transfer
     Given a signing request is "READY_TO_AGGREGATE"
     When I aggregate and broadcast the signing request
@@ -38,4 +62,3 @@ Feature: Step-by-step FROST signing and Solana transfer
     And the frontend should display a Solana Explorer transaction link
     When Solana reports the transaction as confirmed
     Then the signing request status should become "CONFIRMED"
-
