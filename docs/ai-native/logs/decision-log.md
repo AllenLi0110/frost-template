@@ -168,3 +168,26 @@ Consequences:
 
 Verification:
 - Coordinator request-builder unit tests cover Round 2 and Round 3 peer package maps.
+
+### 2026-06-24 - Derive Wallet Addresses From Public DKG Context In Coordinator
+
+Decision:
+- Phase 4 derives Solana wallet addresses in the Coordinator from `master_public_key_base58` plus a public `hd-wallet-edwards-v1` derivation context.
+
+Context:
+- The assignment requires wallet creation after DKG completion, but private root shares and private child shares must remain outside Coordinator and Frontend.
+
+Options considered:
+- Ask Node A and Node B to derive every public address.
+- Let Coordinator derive child public keys using only public material and reserve private child share derivation for the signing phase.
+
+Reasoning:
+- Ed25519 public derivation through `hd-wallet` only needs the master public key, chain code, and non-hardened index. This keeps wallet creation fast and keeps the TSS node boundary intact.
+
+Consequences:
+- `coordinator.dkg_sessions` stores public derivation context.
+- `coordinator.wallets` stores only wallet index, public key, Solana address, and balance cache.
+- Transfer signing still requires a later node-local child-share/signing phase.
+
+Verification:
+- `./scripts/verify-phase.sh 4` verifies DKG gating, sequential wallet indexes, restart persistence, balance lookup status handling, and frontend rendering.

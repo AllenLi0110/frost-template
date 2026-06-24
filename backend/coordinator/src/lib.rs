@@ -5,9 +5,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use generic_ec::{curves::Ed25519, Point};
+use hd_wallet::{edwards, ExtendedPublicKey, NonHardenedIndex};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, types::Json as SqlxJson, Executor, FromRow, PgPool};
 use std::{collections::BTreeMap, error::Error, fmt, sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -27,6 +30,10 @@ const STATUS_ROUND_1_COMPLETE: &str = "ROUND_1_COMPLETE";
 const STATUS_ROUND_2_IN_PROGRESS: &str = "ROUND_2_IN_PROGRESS";
 const STATUS_ROUND_2_COMPLETE: &str = "ROUND_2_COMPLETE";
 const STATUS_ROUND_3_IN_PROGRESS: &str = "ROUND_3_IN_PROGRESS";
+const PUBLIC_DERIVATION_SCHEME: &str = "hd-wallet-edwards-v1";
+const PUBLIC_DERIVATION_CONTEXT_DOMAIN: &str = "frost-template-public-derivation-context-v1";
+const BALANCE_STATUS_AVAILABLE: &str = "AVAILABLE";
+const BALANCE_STATUS_UNAVAILABLE: &str = "UNAVAILABLE";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppConfig {
@@ -106,7 +113,7 @@ pub struct HealthResponse {
     service: &'static str,
     status: &'static str,
     database_configured: bool,
-    solana_rpc_url: String,
+    solana_rpc_configured: bool,
     node_a_url: String,
     node_b_url: String,
 }
@@ -169,11 +176,40 @@ struct NodeDkgRoundRequest {
     peer_round2_packages: BTreeMap<String, String>,
 }
 
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct WalletListResponse {
+    wallets: Vec<WalletResponse>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct WalletResponse {
+    wallet_index: i32,
+    dkg_session_id: Uuid,
+    derivation_path: String,
+    public_key_base58: String,
+    address_base58: String,
+    balance_lamports: Option<i64>,
+    balance_status: String,
+    balance_error_message: Option<String>,
+    balance_checked_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct WalletBalanceResponse {
+    wallet_index: i32,
+    address_base58: String,
+    balance_lamports: Option<i64>,
+    balance_status: String,
+    balance_error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct DkgSessionRow {
     id: Uuid,
     status: String,
     master_public_key_base58: Option<String>,
+    public_derivation_context: Option<SqlxJson<Value>>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -184,15 +220,57 @@ struct DkgStepRow {
     public_payload: Option<SqlxJson<Value>>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct WalletRow {
+    wallet_index: i32,
+    dkg_session_id: Uuid,
+    derivation_path: String,
+    public_key_base58: String,
+    address_base58: String,
+    balance_lamports: Option<i64>,
+    balance_status: String,
+    balance_error_message: Option<String>,
+    balance_checked_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DerivedWallet {
+    wallet_index: i32,
+    derivation_path: String,
+    public_key_base58: String,
+    address_base58: String,
+}
+
+#[derive(Deserialize)]
+struct SolanaBalanceRpcResponse {
+    result: Option<SolanaBalanceResult>,
+    error: Option<SolanaRpcError>,
+}
+
+#[derive(Deserialize)]
+struct SolanaBalanceResult {
+    value: u64,
+}
+
+#[derive(Deserialize)]
+struct SolanaRpcError {
+    message: String,
+}
+
 #[derive(Debug)]
 enum DkgError {
     DatabaseUnavailable,
     InvalidCreateRequest(String),
     InvalidNode(String),
     InvalidRound(i32),
+    InvalidWalletIndex(i32),
     SessionNotFound,
     TransitionBlocked(String),
     NodeCallFailed(String),
+    WalletNotFound(i32),
+    WalletDerivationBlocked(String),
+    WalletDerivationFailed(String),
     Database(sqlx::Error),
 }
 
@@ -203,9 +281,17 @@ impl fmt::Display for DkgError {
             Self::InvalidCreateRequest(message) => write!(f, "{message}"),
             Self::InvalidNode(node_id) => write!(f, "unsupported node id {node_id}"),
             Self::InvalidRound(round) => write!(f, "unsupported DKG round {round}"),
+            Self::InvalidWalletIndex(wallet_index) => {
+                write!(f, "unsupported wallet index {wallet_index}")
+            }
             Self::SessionNotFound => write!(f, "DKG session not found"),
             Self::TransitionBlocked(message) => write!(f, "{message}"),
             Self::NodeCallFailed(message) => write!(f, "{message}"),
+            Self::WalletNotFound(wallet_index) => {
+                write!(f, "wallet index {wallet_index} not found")
+            }
+            Self::WalletDerivationBlocked(message) => write!(f, "{message}"),
+            Self::WalletDerivationFailed(message) => write!(f, "{message}"),
             Self::Database(error) => write!(f, "database error: {error}"),
         }
     }
@@ -223,13 +309,16 @@ impl IntoResponse for DkgError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::DatabaseUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::InvalidCreateRequest(_) | Self::InvalidNode(_) | Self::InvalidRound(_) => {
-                StatusCode::BAD_REQUEST
-            }
-            Self::SessionNotFound => StatusCode::NOT_FOUND,
-            Self::TransitionBlocked(_) => StatusCode::CONFLICT,
+            Self::InvalidCreateRequest(_)
+            | Self::InvalidNode(_)
+            | Self::InvalidRound(_)
+            | Self::InvalidWalletIndex(_) => StatusCode::BAD_REQUEST,
+            Self::SessionNotFound | Self::WalletNotFound(_) => StatusCode::NOT_FOUND,
+            Self::TransitionBlocked(_) | Self::WalletDerivationBlocked(_) => StatusCode::CONFLICT,
             Self::NodeCallFailed(_) => StatusCode::BAD_GATEWAY,
-            Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::WalletDerivationFailed(_) | Self::Database(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         let body = Json(json!({ "error": self.to_string() }));
 
@@ -257,6 +346,11 @@ pub fn router_with_pool(config: AppConfig, db_pool: Option<PgPool>) -> Router {
         .route("/health/nodes", get(node_health))
         .route("/api/dkg/sessions", post(create_dkg_session))
         .route("/api/dkg/sessions/active", get(get_active_dkg_session))
+        .route("/api/wallets", get(list_wallets).post(create_wallet))
+        .route(
+            "/api/wallets/{wallet_index}/balance",
+            get(refresh_wallet_balance),
+        )
         .route(
             "/api/dkg/sessions/{session_id}/nodes/{node_id}/rounds/{round}",
             post(trigger_dkg_round),
@@ -284,7 +378,7 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         service: "coordinator",
         status: "ok",
         database_configured: !state.config.database_url.is_empty(),
-        solana_rpc_url: state.config.solana_rpc_url.clone(),
+        solana_rpc_configured: !state.config.solana_rpc_url.is_empty(),
         node_a_url: state.config.node_a_url.clone(),
         node_b_url: state.config.node_b_url.clone(),
     })
@@ -297,6 +391,117 @@ async fn node_health(State(state): State<AppState>) -> Json<NodeHealthResponse> 
     Json(NodeHealthResponse {
         nodes: vec![node_a, node_b],
     })
+}
+
+async fn create_wallet(State(state): State<AppState>) -> Result<Json<WalletResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let session = completed_wallet_session(pool).await?;
+    let master_public_key = session
+        .master_public_key_base58
+        .as_deref()
+        .ok_or_else(wallet_derivation_prerequisite_error)?;
+    let public_derivation_context = ensure_public_derivation_context(pool, &session).await?;
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query("LOCK TABLE coordinator.wallets IN EXCLUSIVE MODE")
+        .execute(&mut *transaction)
+        .await?;
+
+    let wallet_index = sqlx::query_scalar::<_, i32>(
+        r#"
+        SELECT COALESCE(MAX(wallet_index) + 1, 0)
+        FROM coordinator.wallets
+        "#,
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    let derived_wallet =
+        derive_wallet(master_public_key, &public_derivation_context, wallet_index)?;
+    let wallet = sqlx::query_as::<_, WalletRow>(
+        r#"
+        INSERT INTO coordinator.wallets
+            (wallet_index, dkg_session_id, derivation_path, public_key_base58, address_base58)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING
+            wallet_index,
+            dkg_session_id,
+            derivation_path,
+            public_key_base58,
+            address_base58,
+            balance_lamports,
+            balance_status,
+            balance_error_message,
+            balance_checked_at::text AS balance_checked_at,
+            created_at::text AS created_at
+        "#,
+    )
+    .bind(derived_wallet.wallet_index)
+    .bind(session.id)
+    .bind(&derived_wallet.derivation_path)
+    .bind(&derived_wallet.public_key_base58)
+    .bind(&derived_wallet.address_base58)
+    .fetch_one(&mut *transaction)
+    .await?;
+
+    transaction.commit().await?;
+
+    Ok(Json(wallet.into()))
+}
+
+async fn list_wallets(State(state): State<AppState>) -> Result<Json<WalletListResponse>, DkgError> {
+    let pool = db_pool(&state)?;
+    let wallets = fetch_wallets(pool).await?;
+
+    Ok(Json(WalletListResponse {
+        wallets: wallets.into_iter().map(WalletResponse::from).collect(),
+    }))
+}
+
+async fn refresh_wallet_balance(
+    State(state): State<AppState>,
+    Path(wallet_index): Path<i32>,
+) -> Result<Json<WalletBalanceResponse>, DkgError> {
+    validate_wallet_index(wallet_index)?;
+    let pool = db_pool(&state)?;
+    let wallet = fetch_wallet(pool, wallet_index)
+        .await?
+        .ok_or(DkgError::WalletNotFound(wallet_index))?;
+    let balance_result = fetch_balance_lamports(
+        &state.http_client,
+        &state.config.solana_rpc_url,
+        &wallet.address_base58,
+    )
+    .await;
+
+    let (balance_lamports, balance_status, balance_error_message) = match balance_result {
+        Ok(balance_lamports) => (
+            Some(balance_lamports),
+            BALANCE_STATUS_AVAILABLE.to_string(),
+            None,
+        ),
+        Err(error_message) => (
+            None,
+            BALANCE_STATUS_UNAVAILABLE.to_string(),
+            Some(error_message),
+        ),
+    };
+
+    let updated_wallet = update_wallet_balance(
+        pool,
+        wallet_index,
+        balance_lamports,
+        &balance_status,
+        balance_error_message.as_deref(),
+    )
+    .await?;
+
+    Ok(Json(WalletBalanceResponse {
+        wallet_index: updated_wallet.wallet_index,
+        address_base58: updated_wallet.address_base58,
+        balance_lamports: updated_wallet.balance_lamports,
+        balance_status: updated_wallet.balance_status,
+        balance_error_message: updated_wallet.balance_error_message,
+    }))
 }
 
 async fn create_dkg_session(
@@ -470,16 +675,23 @@ async fn trigger_dkg_round(
     } else {
         None
     };
+    let public_derivation_context = master_public_key
+        .as_ref()
+        .map(|master_public_key| SqlxJson(build_public_derivation_context(master_public_key)));
 
     sqlx::query(
         r#"
         UPDATE coordinator.dkg_sessions
-        SET status = $1, master_public_key_base58 = COALESCE($2, master_public_key_base58), updated_at = now()
-        WHERE id = $3
+        SET status = $1,
+            master_public_key_base58 = COALESCE($2, master_public_key_base58),
+            public_derivation_context = COALESCE($3, public_derivation_context),
+            updated_at = now()
+        WHERE id = $4
         "#,
     )
     .bind(&dkg_status)
     .bind(master_public_key)
+    .bind(public_derivation_context)
     .bind(session_id)
     .execute(pool)
     .await?;
@@ -507,10 +719,13 @@ async fn call_node_dkg_round(
         _ => return Err(DkgError::InvalidNode(node_id.to_string())),
     };
     let url = format!("{node_url}/internal/dkg/{session_id}/round{round}");
-    let response =
-        state.http_client.post(&url).json(request).send().await.map_err(|error| {
-            DkgError::NodeCallFailed(format!("{node_id} DKG call failed: {error}"))
-        })?;
+    let response = state
+        .http_client
+        .post(&url)
+        .json(request)
+        .send()
+        .await
+        .map_err(|error| DkgError::NodeCallFailed(format!("{node_id} DKG call failed: {error}")))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -582,6 +797,11 @@ async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
         pool,
         include_str!("../../migrations/0003_create_node_dkg_state.sql"),
     )
+    .await?;
+    run_sql_file(
+        pool,
+        include_str!("../../migrations/0004_create_wallet_tables.sql"),
+    )
     .await
 }
 
@@ -623,6 +843,315 @@ async fn run_sql_file(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     }
 
     Ok(())
+}
+
+async fn completed_wallet_session(pool: &PgPool) -> Result<DkgSessionRow, DkgError> {
+    let session = fetch_active_session(pool)
+        .await?
+        .ok_or_else(wallet_derivation_prerequisite_error)?;
+
+    validate_completed_wallet_session(&session)?;
+
+    Ok(session)
+}
+
+fn validate_completed_wallet_session(session: &DkgSessionRow) -> Result<(), DkgError> {
+    if session.status != STATUS_COMPLETED || session.master_public_key_base58.is_none() {
+        return Err(wallet_derivation_prerequisite_error());
+    }
+
+    Ok(())
+}
+
+fn wallet_derivation_prerequisite_error() -> DkgError {
+    DkgError::WalletDerivationBlocked(
+        "wallet derivation requires a completed DKG session with a master public key".to_string(),
+    )
+}
+
+async fn ensure_public_derivation_context(
+    pool: &PgPool,
+    session: &DkgSessionRow,
+) -> Result<Value, DkgError> {
+    if let Some(context) = &session.public_derivation_context {
+        validate_public_derivation_context(&context.0)?;
+        return Ok(context.0.clone());
+    }
+
+    let master_public_key = session
+        .master_public_key_base58
+        .as_deref()
+        .ok_or_else(wallet_derivation_prerequisite_error)?;
+    let context = build_public_derivation_context(master_public_key);
+
+    sqlx::query(
+        r#"
+        UPDATE coordinator.dkg_sessions
+        SET public_derivation_context = COALESCE(public_derivation_context, $1),
+            updated_at = now()
+        WHERE id = $2
+        "#,
+    )
+    .bind(SqlxJson(context.clone()))
+    .bind(session.id)
+    .execute(pool)
+    .await?;
+
+    Ok(context)
+}
+
+fn build_public_derivation_context(master_public_key_base58: &str) -> Value {
+    let mut hasher = Sha256::new();
+    hasher.update(PUBLIC_DERIVATION_CONTEXT_DOMAIN.as_bytes());
+    hasher.update(master_public_key_base58.as_bytes());
+    let chain_code = hasher.finalize();
+
+    json!({
+        "scheme": PUBLIC_DERIVATION_SCHEME,
+        "chain_code_base58": bs58::encode(chain_code.as_slice()).into_string()
+    })
+}
+
+fn validate_public_derivation_context(context: &Value) -> Result<(), DkgError> {
+    if context.get("scheme").and_then(Value::as_str) != Some(PUBLIC_DERIVATION_SCHEME) {
+        return Err(DkgError::WalletDerivationFailed(
+            "public derivation context has an unsupported scheme".to_string(),
+        ));
+    }
+
+    decode_public_derivation_chain_code(context).map(|_| ())
+}
+
+fn derive_wallet(
+    master_public_key_base58: &str,
+    public_derivation_context: &Value,
+    wallet_index: i32,
+) -> Result<DerivedWallet, DkgError> {
+    validate_wallet_index(wallet_index)?;
+    let master_public_key_bytes =
+        bs58::decode(master_public_key_base58)
+            .into_vec()
+            .map_err(|error| {
+                DkgError::WalletDerivationFailed(format!(
+                    "master public key is not valid Base58: {error}"
+                ))
+            })?;
+    let parent_public_key =
+        Point::<Ed25519>::from_bytes(&master_public_key_bytes).map_err(|_| {
+            DkgError::WalletDerivationFailed(
+                "master public key is not a valid Ed25519 point".to_string(),
+            )
+        })?;
+    let chain_code = decode_public_derivation_chain_code(public_derivation_context)?;
+    let extended_public_key = ExtendedPublicKey::<Ed25519> {
+        public_key: parent_public_key,
+        chain_code,
+    };
+    let child_index = NonHardenedIndex::try_from(wallet_index as u32)
+        .map_err(|_| DkgError::InvalidWalletIndex(wallet_index))?;
+    let child_public_key =
+        edwards::derive_child_public_key_with_path(&extended_public_key, [child_index]);
+    let child_public_key_bytes = child_public_key.public_key.to_bytes(true);
+    let public_key_base58 = bs58::encode(child_public_key_bytes.as_bytes()).into_string();
+
+    Ok(DerivedWallet {
+        wallet_index,
+        derivation_path: format!("m/{wallet_index}"),
+        public_key_base58: public_key_base58.clone(),
+        address_base58: public_key_base58,
+    })
+}
+
+fn decode_public_derivation_chain_code(context: &Value) -> Result<[u8; 32], DkgError> {
+    let chain_code_base58 = context
+        .get("chain_code_base58")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            DkgError::WalletDerivationFailed(
+                "public derivation context is missing chain_code_base58".to_string(),
+            )
+        })?;
+    let chain_code_bytes = bs58::decode(chain_code_base58)
+        .into_vec()
+        .map_err(|error| {
+            DkgError::WalletDerivationFailed(format!(
+                "public derivation chain code is not valid Base58: {error}"
+            ))
+        })?;
+
+    chain_code_bytes.try_into().map_err(|_| {
+        DkgError::WalletDerivationFailed(
+            "public derivation chain code must be 32 bytes".to_string(),
+        )
+    })
+}
+
+fn validate_wallet_index(wallet_index: i32) -> Result<(), DkgError> {
+    if wallet_index < 0 {
+        return Err(DkgError::InvalidWalletIndex(wallet_index));
+    }
+
+    Ok(())
+}
+
+async fn fetch_wallets(pool: &PgPool) -> Result<Vec<WalletRow>, DkgError> {
+    sqlx::query_as::<_, WalletRow>(
+        r#"
+        SELECT
+            wallet_index,
+            dkg_session_id,
+            derivation_path,
+            public_key_base58,
+            address_base58,
+            balance_lamports,
+            balance_status,
+            balance_error_message,
+            balance_checked_at::text AS balance_checked_at,
+            created_at::text AS created_at
+        FROM coordinator.wallets
+        ORDER BY wallet_index
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn fetch_wallet(pool: &PgPool, wallet_index: i32) -> Result<Option<WalletRow>, DkgError> {
+    sqlx::query_as::<_, WalletRow>(
+        r#"
+        SELECT
+            wallet_index,
+            dkg_session_id,
+            derivation_path,
+            public_key_base58,
+            address_base58,
+            balance_lamports,
+            balance_status,
+            balance_error_message,
+            balance_checked_at::text AS balance_checked_at,
+            created_at::text AS created_at
+        FROM coordinator.wallets
+        WHERE wallet_index = $1
+        "#,
+    )
+    .bind(wallet_index)
+    .fetch_optional(pool)
+    .await
+    .map_err(DkgError::from)
+}
+
+async fn update_wallet_balance(
+    pool: &PgPool,
+    wallet_index: i32,
+    balance_lamports: Option<i64>,
+    balance_status: &str,
+    balance_error_message: Option<&str>,
+) -> Result<WalletRow, DkgError> {
+    sqlx::query_as::<_, WalletRow>(
+        r#"
+        UPDATE coordinator.wallets
+        SET balance_lamports = $2,
+            balance_status = $3,
+            balance_error_message = $4,
+            balance_checked_at = now()
+        WHERE wallet_index = $1
+        RETURNING
+            wallet_index,
+            dkg_session_id,
+            derivation_path,
+            public_key_base58,
+            address_base58,
+            balance_lamports,
+            balance_status,
+            balance_error_message,
+            balance_checked_at::text AS balance_checked_at,
+            created_at::text AS created_at
+        "#,
+    )
+    .bind(wallet_index)
+    .bind(balance_lamports)
+    .bind(balance_status)
+    .bind(balance_error_message)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(DkgError::WalletNotFound(wallet_index))
+}
+
+async fn fetch_balance_lamports(
+    client: &Client,
+    solana_rpc_url: &str,
+    address_base58: &str,
+) -> Result<i64, String> {
+    let response = client
+        .post(solana_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [address_base58]
+        }))
+        .send()
+        .await
+        .map_err(|_| "Solana RPC request failed".to_string())?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        return Err(format!("Solana RPC returned HTTP {status}"));
+    }
+
+    let payload = response
+        .json::<SolanaBalanceRpcResponse>()
+        .await
+        .map_err(|_| "Solana RPC response was invalid".to_string())?;
+
+    if let Some(error) = payload.error {
+        return Err(format!(
+            "Solana RPC error: {}",
+            public_error_message(&error.message)
+        ));
+    }
+
+    let balance = payload
+        .result
+        .ok_or_else(|| "Solana RPC response did not include a balance".to_string())?
+        .value;
+
+    i64::try_from(balance).map_err(|_| "Solana RPC balance exceeded i64 range".to_string())
+}
+
+fn public_error_message(message: &str) -> String {
+    const MAX_PUBLIC_ERROR_CHARS: usize = 160;
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if compact.chars().count() <= MAX_PUBLIC_ERROR_CHARS {
+        return compact;
+    }
+
+    format!(
+        "{}...",
+        compact
+            .chars()
+            .take(MAX_PUBLIC_ERROR_CHARS)
+            .collect::<String>()
+    )
+}
+
+impl From<WalletRow> for WalletResponse {
+    fn from(row: WalletRow) -> Self {
+        Self {
+            wallet_index: row.wallet_index,
+            dkg_session_id: row.dkg_session_id,
+            derivation_path: row.derivation_path,
+            public_key_base58: row.public_key_base58,
+            address_base58: row.address_base58,
+            balance_lamports: row.balance_lamports,
+            balance_status: row.balance_status,
+            balance_error_message: row.balance_error_message,
+            balance_checked_at: row.balance_checked_at,
+            created_at: row.created_at,
+        }
+    }
 }
 
 fn validate_create_request(payload: &CreateDkgSessionRequest) -> Result<(), DkgError> {
@@ -756,10 +1285,7 @@ fn extract_completed_master_public_key(steps: &[DkgStepRow]) -> Result<String, D
     let mut master_public_keys = Vec::new();
 
     for step in steps.iter().filter(|step| step.round == 3) {
-        master_public_keys.push(required_payload_string(
-            step,
-            "master_public_key_base58",
-        )?);
+        master_public_keys.push(required_payload_string(step, "master_public_key_base58")?);
     }
 
     let first = master_public_keys.first().ok_or_else(|| {
@@ -841,7 +1367,7 @@ fn any_round_step_started(steps: &[DkgStepRow], round: i32) -> bool {
 async fn fetch_active_session(pool: &PgPool) -> Result<Option<DkgSessionRow>, DkgError> {
     sqlx::query_as::<_, DkgSessionRow>(
         r#"
-        SELECT id, status, master_public_key_base58
+        SELECT id, status, master_public_key_base58, public_derivation_context
         FROM coordinator.dkg_sessions
         WHERE active = TRUE
         ORDER BY created_at DESC
@@ -856,7 +1382,7 @@ async fn fetch_active_session(pool: &PgPool) -> Result<Option<DkgSessionRow>, Dk
 async fn fetch_session(pool: &PgPool, session_id: Uuid) -> Result<Option<DkgSessionRow>, DkgError> {
     sqlx::query_as::<_, DkgSessionRow>(
         r#"
-        SELECT id, status, master_public_key_base58
+        SELECT id, status, master_public_key_base58, public_derivation_context
         FROM coordinator.dkg_sessions
         WHERE id = $1
         "#,
@@ -1096,6 +1622,7 @@ mod tests {
             id: session_id,
             status: STATUS_ROUND_1_IN_PROGRESS.to_string(),
             master_public_key_base58: None,
+            public_derivation_context: None,
         };
         let completed_step = DkgStepRow {
             node_id: "node-a".to_string(),
@@ -1130,6 +1657,7 @@ mod tests {
             id: session_id,
             status: STATUS_ROUND_2_IN_PROGRESS.to_string(),
             master_public_key_base58: None,
+            public_derivation_context: None,
         };
         let completed_step = DkgStepRow {
             node_id: "node-a".to_string(),
@@ -1163,6 +1691,7 @@ mod tests {
             id: session_id,
             status: STATUS_COMPLETED.to_string(),
             master_public_key_base58: Some(master_public_key.clone()),
+            public_derivation_context: None,
         };
 
         let response = session_response_from_rows(session, all_completed_steps());
@@ -1171,6 +1700,77 @@ mod tests {
         assert_eq!(response.status, STATUS_COMPLETED);
         assert_eq!(response.master_public_key_base58, Some(master_public_key));
         assert_eq!(response.node_steps.len(), 6);
+    }
+
+    #[test]
+    fn rejects_wallet_derivation_before_dkg_completes() {
+        let session = DkgSessionRow {
+            id: Uuid::new_v4(),
+            status: STATUS_ROUND_2_COMPLETE.to_string(),
+            master_public_key_base58: Some(sample_master_public_key_base58()),
+            public_derivation_context: None,
+        };
+
+        let error = validate_completed_wallet_session(&session)
+            .expect_err("wallet derivation should wait for completed DKG");
+
+        assert!(matches!(error, DkgError::WalletDerivationBlocked(_)));
+    }
+
+    #[test]
+    fn public_derivation_context_is_deterministic() {
+        let master_public_key = sample_master_public_key_base58();
+        let first = build_public_derivation_context(&master_public_key);
+        let second = build_public_derivation_context(&master_public_key);
+
+        assert_eq!(first, second);
+        assert_eq!(first["scheme"], PUBLIC_DERIVATION_SCHEME);
+        assert_eq!(
+            decode_public_derivation_chain_code(&first)
+                .expect("chain code should decode")
+                .len(),
+            32
+        );
+    }
+
+    #[test]
+    fn derives_wallet_deterministically_for_same_context_and_index() {
+        let master_public_key = sample_master_public_key_base58();
+        let context = build_public_derivation_context(&master_public_key);
+        let first = derive_wallet(&master_public_key, &context, 0)
+            .expect("first derivation should succeed");
+        let second = derive_wallet(&master_public_key, &context, 0)
+            .expect("second derivation should succeed");
+
+        assert_eq!(first, second);
+        assert_eq!(first.wallet_index, 0);
+        assert_eq!(first.derivation_path, "m/0");
+        assert_eq!(first.public_key_base58, first.address_base58);
+        assert!(!first.address_base58.is_empty());
+    }
+
+    #[test]
+    fn derives_different_wallets_for_different_indexes() {
+        let master_public_key = sample_master_public_key_base58();
+        let context = build_public_derivation_context(&master_public_key);
+        let first = derive_wallet(&master_public_key, &context, 0).expect("index 0 should derive");
+        let second = derive_wallet(&master_public_key, &context, 1).expect("index 1 should derive");
+
+        assert_ne!(first.address_base58, second.address_base58);
+        assert_eq!(second.derivation_path, "m/1");
+    }
+
+    #[test]
+    fn public_rpc_error_message_is_compact_and_bounded() {
+        let long_message = format!(
+            "first line\n{}\nlast line",
+            "token-like-error-fragment ".repeat(20)
+        );
+        let message = public_error_message(&long_message);
+
+        assert!(!message.contains('\n'));
+        assert!(message.chars().count() <= 163);
+        assert!(message.ends_with("..."));
     }
 
     #[test]
@@ -1188,8 +1788,8 @@ mod tests {
             ),
         ];
 
-        let request = build_node_dkg_round_request(&steps, "node-a", 2)
-            .expect("request should build");
+        let request =
+            build_node_dkg_round_request(&steps, "node-a", 2).expect("request should build");
 
         assert_eq!(
             request.peer_round1_packages,
@@ -1223,8 +1823,8 @@ mod tests {
             ),
         ];
 
-        let request = build_node_dkg_round_request(&steps, "node-a", 3)
-            .expect("request should build");
+        let request =
+            build_node_dkg_round_request(&steps, "node-a", 3).expect("request should build");
 
         assert_eq!(
             request.peer_round1_packages,
@@ -1251,8 +1851,8 @@ mod tests {
             ),
         ];
 
-        let master_public_key = extract_completed_master_public_key(&steps)
-            .expect("master public key should extract");
+        let master_public_key =
+            extract_completed_master_public_key(&steps).expect("master public key should extract");
 
         assert_eq!(master_public_key, "matching-master-key");
     }
@@ -1305,5 +1905,11 @@ mod tests {
                     .map(move |round| step(node_id, *round, STATUS_COMPLETED))
             })
             .collect()
+    }
+
+    fn sample_master_public_key_base58() -> String {
+        let point = Point::<Ed25519>::generator().to_point();
+
+        bs58::encode(point.to_bytes(true).as_bytes()).into_string()
     }
 }
