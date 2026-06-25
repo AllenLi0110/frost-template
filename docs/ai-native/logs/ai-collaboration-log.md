@@ -375,6 +375,43 @@ Evidence links:
 Follow-up:
 - Run the manual acceptance checklist on the PR branch before merge if reviewer screenshots or fresh Devnet evidence are requested.
 
+### 2026-06-26 - Phase 8 Crypto Dashboard UX
+
+Prompt summary:
+- The user asked how to make the app feel more like a crypto workflow, then started Phase 8.
+
+Important context provided:
+- The existing app works but reads like a protocol control panel.
+- The user wants a reviewer-friendly crypto operations dashboard without changing the underlying challenge requirements.
+- After the first pass, the user clarified that the style should feel more like a mobile one-page flow with animated process steps.
+
+AI output summary:
+- Added Phase 8 prompt, BDD scenarios, and crypto dashboard UX contract.
+- Planned a frontend-only reframing into an MPC wallet dashboard.
+- Preserved all manual DKG and signing controls as non-negotiable challenge behavior.
+- Added active/completed/queued workflow states, active-step animation, and reduced-motion handling for a mobile-friendly one-page demo flow.
+
+Human corrections:
+- Requested a mobile-friendly one-page style with animated workflow steps before committing and opening the draft PR.
+
+Verification:
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 8`
+- Result: passed
+- Check: `390x844` browser viewport
+- Result: passed; no horizontal overflow, single-column workflow stepper present, reduced-motion CSS present
+
+Evidence links:
+- Files: `features/crypto-dashboard-ux.feature`, `docs/contracts/crypto-dashboard-ux.md`, `docs/ai-native/prompts/08-crypto-dashboard-ux.md`, `frontend/app/page.tsx`, `frontend/app/globals.css`
+
+Follow-up:
+- Capture a short demo video after the Phase 8 UI is reviewed.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

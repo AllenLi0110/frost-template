@@ -104,6 +104,28 @@ const nodes: Array<{ id: NodeId; label: string }> = [
 const rounds: Round[] = [1, 2, 3];
 const signingRounds: SigningRound[] = [1, 2];
 const defaultRecipientAddress = "";
+const workflowSteps = [
+  {
+    label: "Key Ceremony",
+    detail: "Create the 2-of-2 root key",
+  },
+  {
+    label: "Vault Funding",
+    detail: "Fund a Devnet sender vault",
+  },
+  {
+    label: "Transfer Intent",
+    detail: "Prepare recipient and lamports",
+  },
+  {
+    label: "Threshold Signing",
+    detail: "Collect signer commitments",
+  },
+  {
+    label: "Broadcast",
+    detail: "Send and verify the receipt",
+  },
+];
 
 export default function Home() {
   const [session, setSession] = useState<DkgSession | null>(null);
@@ -132,7 +154,7 @@ export default function Home() {
   const [lastAction, setLastAction] = useState<ActionEntry>({
     label: "Ready",
     status: "idle",
-    message: "Create or load a DKG session to begin.",
+    message: "Start or load a key ceremony to begin the MPC wallet workflow.",
   });
 
   useEffect(() => {
@@ -158,6 +180,57 @@ export default function Home() {
     );
   }, [selectedSigningRequestId, signingRequests]);
 
+  const completedSigningSteps = useMemo(() => {
+    return (
+      selectedSigningRequest?.node_steps.filter(
+        (step) => step.status === "COMPLETED",
+      ).length ?? 0
+    );
+  }, [selectedSigningRequest]);
+
+  const hasFundedVault = useMemo(() => {
+    return wallets.some((wallet) => wallet.balance_status === "AVAILABLE");
+  }, [wallets]);
+
+  const activeWorkflowIndex = useMemo(() => {
+    if (session?.status !== "COMPLETED") {
+      return 0;
+    }
+
+    if (!hasFundedVault) {
+      return 1;
+    }
+
+    if (!selectedSigningRequest) {
+      return 2;
+    }
+
+    if (selectedSigningRequest.status === "PENDING") {
+      return 3;
+    }
+
+    return 4;
+  }, [hasFundedVault, selectedSigningRequest, session?.status]);
+
+  const workflowStepStates = useMemo(() => {
+    return workflowSteps.map((_, index) => {
+      const isComplete =
+        (index === 0 && session?.status === "COMPLETED") ||
+        (index === 1 && hasFundedVault) ||
+        (index === 2 && selectedSigningRequest !== null) ||
+        (index === 3 &&
+          selectedSigningRequest !== null &&
+          selectedSigningRequest.status !== "PENDING") ||
+        (index === 4 && selectedSigningRequest?.status === "CONFIRMED");
+
+      if (isComplete) {
+        return "complete";
+      }
+
+      return index === activeWorkflowIndex ? "active" : "idle";
+    });
+  }, [activeWorkflowIndex, hasFundedVault, selectedSigningRequest, session]);
+
   async function loadActiveSession() {
     setIsLoading(true);
 
@@ -169,9 +242,9 @@ export default function Home() {
       if (response.status === 404) {
         setSession(null);
         setLastAction({
-          label: "No active session",
+          label: "No active ceremony",
           status: "idle",
-          message: "Create a DKG session when you are ready to drive Round 1.",
+          message: "Start a key ceremony when you are ready to drive Round 1.",
         });
         return;
       }
@@ -200,7 +273,7 @@ export default function Home() {
       setWallets(payload.wallets);
     } catch (error) {
       setLastAction({
-        label: "Wallet load failed",
+        label: "Vault load failed",
         status: "error",
         message: errorMessage(error),
       });
@@ -317,15 +390,15 @@ export default function Home() {
 
       await loadWallets();
       setLastAction({
-        label: "Wallet created",
+        label: "Vault created",
         status: "ok",
-        message: `Wallet ${wallet.wallet_index} is ready at ${shortAddress(
+        message: `Vault ${wallet.wallet_index} is ready at ${shortAddress(
           wallet.address_base58,
         )}.`,
       });
     } catch (error) {
       setLastAction({
-        label: "Wallet create failed",
+        label: "Vault create failed",
         status: "error",
         message: errorMessage(error),
       });
@@ -358,7 +431,7 @@ export default function Home() {
         ),
       );
       setLastAction({
-        label: `Wallet ${walletIndex} balance`,
+        label: `Vault ${walletIndex} balance`,
         status: balance.balance_status === "AVAILABLE" ? "ok" : "error",
         message:
           balance.balance_status === "AVAILABLE"
@@ -367,7 +440,7 @@ export default function Home() {
       });
     } catch (error) {
       setLastAction({
-        label: `Wallet ${walletIndex} balance`,
+        label: `Vault ${walletIndex} balance`,
         status: "error",
         message: errorMessage(error),
       });
@@ -381,16 +454,16 @@ export default function Home() {
     setLastAction({
       label: "Sender selected",
       status: "ok",
-      message: `Wallet ${walletIndex} is selected for signing requests.`,
+      message: `Vault ${walletIndex} is selected for transfer tickets.`,
     });
   }
 
   async function createSigningRequest() {
     if (selectedSenderIndex === null) {
       setLastAction({
-        label: "Signing request",
+        label: "Transfer ticket",
         status: "error",
-        message: "Select a sender wallet first.",
+        message: "Select a sender vault first.",
       });
       return;
     }
@@ -399,7 +472,7 @@ export default function Home() {
 
     if (!Number.isInteger(amountLamports) || amountLamports <= 0) {
       setLastAction({
-        label: "Signing request",
+        label: "Transfer ticket",
         status: "error",
         message: "Amount must be a positive lamport integer.",
       });
@@ -408,7 +481,7 @@ export default function Home() {
 
     if (!transferForm.recipientAddress.trim()) {
       setLastAction({
-        label: "Signing request",
+        label: "Transfer ticket",
         status: "error",
         message: "Recipient address is required.",
       });
@@ -432,13 +505,13 @@ export default function Home() {
       await loadSigningRequests();
       setSelectedSigningRequestId(signingRequest.request_id);
       setLastAction({
-        label: "Signing request created",
+        label: "Transfer ticket created",
         status: "ok",
-        message: `Request ${shortId(signingRequest.request_id)} is ${signingRequest.status}.`,
+        message: `Ticket ${shortId(signingRequest.request_id)} is ${signingRequest.status}.`,
       });
     } catch (error) {
       setLastAction({
-        label: "Signing request failed",
+        label: "Transfer ticket failed",
         status: "error",
         message: errorMessage(error),
       });
@@ -465,14 +538,18 @@ export default function Home() {
       await loadSigningRequests();
       setSelectedSigningRequestId(result.request_id);
       setLastAction({
-        label: `${nodeLabel(nodeId)} Signing Round ${round}`,
+        label: `${nodeLabel(nodeId)} ${
+          round === 1 ? "Commitment Round" : "Signature Share Round"
+        }`,
         status: "ok",
-        message: `${result.status}; request is now ${result.signing_status}.`,
+        message: `${result.status}; ticket is now ${result.signing_status}.`,
       });
     } catch (error) {
       await loadSigningRequests();
       setLastAction({
-        label: `${nodeLabel(nodeId)} Signing Round ${round}`,
+        label: `${nodeLabel(nodeId)} ${
+          round === 1 ? "Commitment Round" : "Signature Share Round"
+        }`,
         status: "error",
         message: errorMessage(error),
       });
@@ -503,7 +580,7 @@ export default function Home() {
         status: "ok",
         message: request.transaction_signature
           ? `Transaction ${shortId(request.transaction_signature)} is ${request.status}.`
-          : `Request ${shortId(request.request_id)} is ${request.status}.`,
+          : `Ticket ${shortId(request.request_id)} is ${request.status}.`,
       });
     } catch (error) {
       await loadSigningRequests();
@@ -537,7 +614,7 @@ export default function Home() {
       setLastAction({
         label: "Confirmation refreshed",
         status: request.status === "FAILED" ? "error" : "ok",
-        message: request.error_message ?? `Request is ${request.status}.`,
+        message: request.error_message ?? `Ticket is ${request.status}.`,
       });
     } catch (error) {
       await loadSigningRequests();
@@ -555,12 +632,18 @@ export default function Home() {
     <main className="page-shell">
       <section className="top-band" aria-labelledby="page-title">
         <div>
-          <p className="eyebrow">FROST Template</p>
-          <h1 id="page-title">DKG Control Surface</h1>
+          <p className="eyebrow">FROST MPC Wallet</p>
+          <h1 id="page-title">MPC Wallet Dashboard</h1>
           <p className="intro">
-            Drive DKG, derive wallets, collect threshold signatures, and broadcast
-            Devnet transfers without exposing private node material.
+            Run a 2-of-2 key ceremony, derive Solana Devnet vaults, collect
+            threshold signatures, and broadcast test transfers without exposing
+            node-local private material.
           </p>
+          <div className="network-badges" aria-label="wallet environment">
+            <span>Solana Devnet</span>
+            <span>2-of-2 MPC</span>
+            <span>Test SOL only</span>
+          </div>
         </div>
         <div className="session-actions">
           <button
@@ -569,7 +652,9 @@ export default function Home() {
             onClick={createSession}
             type="button"
           >
-            {pendingAction === "create-session" ? "Creating..." : "Create Session"}
+            {pendingAction === "create-session"
+              ? "Starting..."
+              : "Start Key Ceremony"}
           </button>
           <button
             className="secondary-button"
@@ -582,13 +667,53 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="metric-strip" aria-label="DKG session summary">
-        <Metric label="Session" value={session ? shortId(session.session_id) : "None"} />
-        <Metric label="Status" value={session?.status ?? "NOT_CREATED"} />
-        <Metric label="Steps" value={`${completedSteps}/6 completed`} />
+      <section className="workflow-steps" aria-label="MPC wallet workflow">
+        {workflowSteps.map((step, index) => (
+          <div
+            aria-current={
+              workflowStepStates[index] === "active" ? "step" : undefined
+            }
+            className={`workflow-step workflow-step-${workflowStepStates[index]}`}
+            key={step.label}
+          >
+            <span>{index + 1}</span>
+            <div>
+              <strong>{step.label}</strong>
+              <em>{step.detail}</em>
+            </div>
+            <small>{workflowStepLabel(workflowStepStates[index])}</small>
+          </div>
+        ))}
+      </section>
+
+      <section className="metric-strip" aria-label="MPC wallet summary">
+        <Metric
+          label="Ceremony"
+          value={session ? shortId(session.session_id) : "Not started"}
+        />
+        <Metric label="MPC Status" value={session?.status ?? "NOT_CREATED"} />
+        <Metric label="Ceremony Steps" value={`${completedSteps}/6 completed`} />
         <Metric
           label="Master Key"
           value={session?.master_public_key_base58 ?? "Pending"}
+        />
+        <Metric label="Derived Vaults" value={`${wallets.length}`} />
+        <Metric label="Transfer Tickets" value={`${signingRequests.length}`} />
+        <Metric
+          label="Signature Shares"
+          value={
+            selectedSigningRequest
+              ? `${completedSigningSteps}/4 collected`
+              : "No ticket"
+          }
+        />
+        <Metric
+          label="Receipt"
+          value={
+            selectedSigningRequest?.transaction_signature
+              ? "Available"
+              : "Pending"
+          }
         />
       </section>
 
@@ -596,8 +721,12 @@ export default function Home() {
         <div className="control-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Manual Protocol Driver</p>
-              <h2>Node Round Controls</h2>
+              <p className="eyebrow">Step 1</p>
+              <h2>Key Ceremony</h2>
+              <p className="section-copy">
+                Run each node round manually so reviewers can watch the public
+                DKG transcript advance while private shares stay sealed.
+              </p>
             </div>
             <span className={statusClass(session?.status ?? "NOT_CREATED")}>
               {session?.status ?? "NOT_CREATED"}
@@ -620,7 +749,7 @@ export default function Home() {
                   >
                     <div>
                       <p className="round-node">{node.label}</p>
-                      <h3>Round {round}</h3>
+                      <h3>DKG Round {round}</h3>
                     </div>
                     <span className={statusClass(step.status)}>{step.status}</span>
                     <button
@@ -640,7 +769,7 @@ export default function Home() {
 
         <aside className="state-panel" aria-label="DKG state detail">
           <div>
-            <p className="eyebrow">Coordinator State</p>
+            <p className="eyebrow">Operations Console</p>
             <h2>Latest Result</h2>
           </div>
           <div className={actionClass(lastAction.status)}>
@@ -648,9 +777,9 @@ export default function Home() {
             <p>{lastAction.message}</p>
           </div>
           <div className="boundary-list">
-            <h3>Protocol Boundary</h3>
+            <h3>Custody Boundary</h3>
             <p>Browser calls Coordinator only.</p>
-            <p>TSS nodes return public DKG and signing payloads only.</p>
+            <p>Coordinator stores public protocol state only.</p>
             <p>Private root and child shares stay node-local.</p>
           </div>
         </aside>
@@ -659,8 +788,12 @@ export default function Home() {
       <section className="wallet-panel" aria-labelledby="wallet-title">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Phase 4</p>
-            <h2 id="wallet-title">Wallet Derivation</h2>
+            <p className="eyebrow">Step 2</p>
+            <h2 id="wallet-title">Derived Vaults</h2>
+            <p className="section-copy">
+              Create Solana Devnet vault addresses from public DKG context,
+              then fund a sender vault with test SOL.
+            </p>
           </div>
           <div className="wallet-actions">
             <button
@@ -673,7 +806,7 @@ export default function Home() {
             >
               {pendingWalletAction === "create-wallet"
                 ? "Creating..."
-                : "Create Wallet"}
+                : "Create Vault"}
             </button>
             <button
               className="secondary-button"
@@ -688,11 +821,11 @@ export default function Home() {
 
         {wallets.length === 0 ? (
           <div className="empty-wallet-state">
-            <strong>No wallets</strong>
+            <strong>No derived vaults</strong>
             <p>
               {session?.status === "COMPLETED"
-                ? "Create the first derived wallet from the completed DKG."
-                : "Complete DKG before deriving wallets."}
+                ? "Create the first derived vault from the completed key ceremony."
+                : "Complete the key ceremony before deriving vaults."}
             </p>
           </div>
         ) : (
@@ -704,7 +837,7 @@ export default function Home() {
               return (
                 <article className="wallet-row" key={wallet.wallet_index} role="listitem">
                   <div className="wallet-index">
-                    <span>Index</span>
+                    <span>Vault</span>
                     <strong>{wallet.wallet_index}</strong>
                   </div>
                   <div className="wallet-address">
@@ -750,8 +883,12 @@ export default function Home() {
       <section className="signing-panel" aria-labelledby="signing-title">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Phase 5-6</p>
-            <h2 id="signing-title">Signing Requests</h2>
+            <p className="eyebrow">Steps 3-5</p>
+            <h2 id="signing-title">Transfer Tickets</h2>
+            <p className="section-copy">
+              Create a transfer ticket, collect signer commitments and
+              signature shares, then broadcast a Devnet transaction receipt.
+            </p>
           </div>
           <button
             className="secondary-button"
@@ -763,9 +900,9 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="transfer-form" aria-label="Create transfer intent">
+        <div className="transfer-form" aria-label="Create transfer ticket">
           <label>
-            <span>Sender</span>
+            <span>Sender Vault</span>
             <select
               disabled={wallets.length === 0 || pendingSigningAction !== null}
               onChange={(event) => {
@@ -775,10 +912,10 @@ export default function Home() {
               }}
               value={selectedSenderIndex ?? ""}
             >
-              <option value="">Select wallet</option>
+              <option value="">Select vault</option>
               {wallets.map((wallet) => (
                 <option key={wallet.wallet_index} value={wallet.wallet_index}>
-                  Wallet {wallet.wallet_index} - {shortAddress(wallet.address_base58)}
+                  Vault {wallet.wallet_index} - {shortAddress(wallet.address_base58)}
                 </option>
               ))}
             </select>
@@ -821,7 +958,7 @@ export default function Home() {
           >
             {pendingSigningAction === "create-signing-request"
               ? "Creating..."
-              : "Create Request"}
+              : "Create Ticket"}
           </button>
         </div>
 
@@ -829,8 +966,8 @@ export default function Home() {
           <div className="request-list" role="list">
             {signingRequests.length === 0 ? (
               <div className="empty-wallet-state">
-                <strong>No signing requests</strong>
-                <p>Create a transfer intent after selecting a sender wallet.</p>
+                <strong>No transfer tickets</strong>
+                <p>Create a transfer ticket after selecting a sender vault.</p>
               </div>
             ) : (
               signingRequests.map((request) => {
@@ -849,7 +986,7 @@ export default function Home() {
                   >
                     <span>
                       <strong>{shortId(request.request_id)}</strong>
-                      <small>Wallet {request.wallet_index}</small>
+                      <small>Vault {request.wallet_index}</small>
                     </span>
                     <span className={statusClass(request.status)}>
                       {request.status}
@@ -866,7 +1003,7 @@ export default function Home() {
           <div className="signing-controls">
             <div className="selected-request-summary">
               <div>
-                <p className="eyebrow">Selected Request</p>
+                <p className="eyebrow">Selected Ticket</p>
                 <h3>
                   {selectedSigningRequest
                     ? shortId(selectedSigningRequest.request_id)
@@ -886,7 +1023,7 @@ export default function Home() {
               <>
                 <dl className="request-facts">
                   <div>
-                    <dt>Sender</dt>
+                    <dt>Sender Vault</dt>
                     <dd>{shortAddress(selectedSigningRequest.sender_address_base58)}</dd>
                   </div>
                   <div>
@@ -914,7 +1051,7 @@ export default function Home() {
                     </dd>
                   </div>
                   <div>
-                    <dt>Transaction</dt>
+                    <dt>Transaction Receipt</dt>
                     <dd>
                       {selectedSigningRequest.transaction_signature
                         ? shortId(selectedSigningRequest.transaction_signature)
@@ -944,7 +1081,11 @@ export default function Home() {
                         >
                           <div>
                             <p className="round-node">{node.label}</p>
-                            <h3>Signing Round {round}</h3>
+                            <h3>
+                              {round === 1
+                                ? "Commitment Round"
+                                : "Signature Share Round"}
+                            </h3>
                           </div>
                           <span className={statusClass(step.status)}>
                             {step.status}
@@ -974,6 +1115,14 @@ export default function Home() {
                 </div>
 
                 <div className="broadcast-actions">
+                  <div className="receipt-heading">
+                    <p className="eyebrow">Transaction Receipt</p>
+                    <strong>
+                      {selectedSigningRequest.transaction_signature
+                        ? shortId(selectedSigningRequest.transaction_signature)
+                        : "Not broadcast"}
+                    </strong>
+                  </div>
                   <button
                     className="primary-button"
                     disabled={
@@ -1022,8 +1171,8 @@ export default function Home() {
               </>
             ) : (
               <div className="empty-wallet-state">
-                <strong>No request selected</strong>
-                <p>Create or select a request to trigger signing rounds.</p>
+                <strong>No transfer ticket selected</strong>
+                <p>Create or select a ticket to collect threshold signatures.</p>
               </div>
             )}
           </div>
@@ -1040,6 +1189,18 @@ function Metric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function workflowStepLabel(state: string) {
+  if (state === "complete") {
+    return "Done";
+  }
+
+  if (state === "active") {
+    return "Now";
+  }
+
+  return "Queued";
 }
 
 function findStep(

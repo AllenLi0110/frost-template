@@ -228,3 +228,24 @@ The script verifies:
 - Reviewer BDD scenario, reviewer contract, collaboration log, decision log, and Phase 7 run report exist.
 
 Manual Devnet verification remains a human acceptance step because it requires a funded Devnet wallet and live RPC/faucet availability.
+
+## Phase 8: Crypto Dashboard UX
+
+Purpose:
+- Confirm the reviewer-facing frontend reads as an MPC Solana wallet dashboard while preserving protocol controls.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 8
+```
+
+The script verifies:
+
+- Phase 7 reviewer hardening checks still pass.
+- Frontend lint and production build.
+- Phase 8 BDD scenario, UX contract, prompt, collaboration log, decision log, and run report exist.
+- The frontend source contains the required dashboard labels: `MPC Wallet Dashboard`, `Key Ceremony`, `Derived Vaults`, `Transfer Tickets`, `Threshold Signing`, `Transaction Receipt`, `Solana Devnet`, and `2-of-2 MPC`.
+- The frontend CSS contains active workflow-step styling and a reduced-motion fallback for the mobile-friendly stepper.
+
+Phase 8 is frontend UX only. Manual Devnet verification remains the same as Phase 7.

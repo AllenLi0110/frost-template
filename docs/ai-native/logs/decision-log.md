@@ -267,3 +267,30 @@ Consequences:
 
 Verification:
 - `./scripts/verify-phase.sh 7` verifies reviewer documentation, AI evidence, backend tests, frontend lint, and frontend build.
+
+### 2026-06-26 - Reframe UX Without Changing Protocol Semantics
+
+Decision:
+- Phase 8 changes only the reviewer-facing frontend language and layout. It does not change backend APIs, FROST protocol behavior, Solana transaction construction, or persistence.
+
+Context:
+- The completed project is functionally correct but visually reads like a protocol test panel.
+- For interview review, the user wants the product to feel closer to a crypto MPC wallet workflow.
+
+Options considered:
+- Build a generic exchange-style trading screen.
+- Keep the raw protocol panel unchanged.
+- Reframe the existing controls as an institutional MPC wallet dashboard.
+
+Reasoning:
+- A trading screen would misrepresent the assignment because the app is a custody/signing workflow, not an order book. Reframing the existing controls as wallet operations improves reviewer comprehension without hiding the assignment-critical manual rounds.
+
+Consequences:
+- DKG becomes Key Ceremony in the UI.
+- Wallet derivation becomes Derived Vaults.
+- Signing requests become Transfer Tickets.
+- The five-step workflow becomes a mobile-friendly active stepper with completed, current, and queued states.
+- Manual Node A / Node B controls remain visible and independently clickable.
+
+Verification:
+- `./scripts/verify-phase.sh 8` verifies the UX labels, active workflow styling, reduced-motion handling, and preserves Phase 7 checks.

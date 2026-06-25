@@ -1621,6 +1621,37 @@ check_phase_seven_stack() {
   check_phase_seven_docs
 }
 
+check_phase_eight_docs() {
+  test -f features/crypto-dashboard-ux.feature
+  test -f docs/contracts/crypto-dashboard-ux.md
+  test -f docs/ai-native/prompts/08-crypto-dashboard-ux.md
+  test -f docs/ai-native/logs/phase-8-agent-run-report.md
+
+  check_required_text frontend/app/page.tsx "MPC Wallet Dashboard"
+  check_required_text frontend/app/page.tsx "Key Ceremony"
+  check_required_text frontend/app/page.tsx "Derived Vaults"
+  check_required_text frontend/app/page.tsx "Transfer Tickets"
+  check_required_text frontend/app/page.tsx "Threshold Signing"
+  check_required_text frontend/app/page.tsx "Transaction Receipt"
+  check_required_text frontend/app/page.tsx "Solana Devnet"
+  check_required_text frontend/app/page.tsx "2-of-2 MPC"
+  check_required_text frontend/app/layout.tsx "FROST MPC Wallet"
+  check_required_text frontend/app/globals.css "workflow-step-active"
+  check_required_text frontend/app/globals.css "prefers-reduced-motion"
+
+  check_required_text features/crypto-dashboard-ux.feature "Feature: Crypto dashboard UX"
+  check_required_text docs/contracts/crypto-dashboard-ux.md "Phase 8 changes the reviewer-facing presentation only."
+  check_required_text docs/ai-native/prompts/08-crypto-dashboard-ux.md "Phase 8 Crypto Dashboard UX"
+  check_required_text docs/ai-native/05-verification-harness.md "Phase 8: Crypto Dashboard UX"
+  check_required_text docs/ai-native/logs/ai-collaboration-log.md "Phase 8 Crypto Dashboard UX"
+  check_required_text docs/ai-native/logs/decision-log.md "Reframe UX Without Changing Protocol Semantics"
+}
+
+check_phase_eight_stack() {
+  check_phase_seven_stack
+  check_phase_eight_docs
+}
+
 case "$phase" in
   0)
     check_no_sensitive_patterns
@@ -1666,6 +1697,11 @@ case "$phase" in
     check_no_sensitive_patterns
     git diff --check
     check_phase_seven_stack
+    ;;
+  8)
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_eight_stack
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."
