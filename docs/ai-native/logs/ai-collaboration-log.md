@@ -340,6 +340,41 @@ Evidence links:
 Follow-up:
 - Record manual Devnet verification after funding a derived wallet and broadcasting a real transfer.
 
+### 2026-06-25 - Phase 7 Reviewer Experience And Hardening
+
+Prompt summary:
+- The user asked to start Phase 7 after finishing the Solana broadcast and confirmation flow.
+
+Important context provided:
+- The reviewer needs to understand what the project does from the UI, not just see buttons.
+- The user had already tested Devnet funding and observed a finalized Explorer transaction during Phase 6.
+- Earlier troubleshooting showed that mock RPC verification must not contaminate the normal Devnet demo stack.
+
+AI output summary:
+- Reworked README into a reviewer-first handoff guide with setup, health checks, local verification, manual acceptance, API reference, AI evidence, CI/versioning, troubleshooting, and out-of-scope notes.
+- Added BDD coverage for the reviewer experience.
+- Added a reviewer-experience contract.
+- Extended Phase 7 verification to check README handoff content, AI evidence files, backend tests, frontend lint, and frontend build.
+
+Human corrections:
+- Treat Devnet SOL as test money only.
+- Clearly explain where to copy derived wallet addresses and how to fund them.
+- Keep manual Devnet transfer success as a human acceptance step, not a CI dependency.
+
+Verification:
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `node scripts/verify-release-metadata.mjs`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 7`
+- Result: passed
+
+Evidence links:
+- Files: `README.md`, `features/reviewer-experience.feature`, `docs/contracts/reviewer-experience.md`, `docs/ai-native/logs/phase-7-agent-run-report.md`, `docs/ai-native/05-verification-harness.md`, `scripts/verify-phase.sh`
+
+Follow-up:
+- Run the manual acceptance checklist on the PR branch before merge if reviewer screenshots or fresh Devnet evidence are requested.
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name
