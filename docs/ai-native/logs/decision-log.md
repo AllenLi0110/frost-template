@@ -241,3 +241,29 @@ Consequences:
 Verification:
 - Backend tests verify child-wallet signatures aggregate and verify against the derived signer.
 - `./scripts/verify-phase.sh 6` verifies DKG, wallet creation, signing, aggregation, mock broadcast, confirmation, and frontend broadcast controls.
+
+### 2026-06-25 - Make Reviewer Handoff A First-Class Contract
+
+Decision:
+- Phase 7 treats reviewer execution and explanation as a formal contract, not only README cleanup.
+
+Context:
+- By Phase 6, the product could perform DKG, derive wallets, sign, broadcast, and confirm Devnet transfers.
+- The user still needed a clear operational story for what the UI does, where wallet addresses come from, how Devnet funding works, and how to answer reviewer or interview questions.
+
+Options considered:
+- Leave the existing implementation docs and rely on live explanation.
+- Add a reviewer-focused README only.
+- Add README, BDD, contract, verification, and AI logs as a reviewer handoff layer.
+
+Reasoning:
+- The third option makes the assignment easier to evaluate and makes the AI-native process auditable. It also catches documentation drift through `./scripts/verify-phase.sh 7`.
+
+Consequences:
+- Phase 7 does not add protocol scope.
+- Reviewer acceptance is split into deterministic local checks and manual Devnet checks.
+- CI remains independent of live faucet availability and funded wallets.
+- Future agents have a contract for preserving reviewer clarity when changing the project.
+
+Verification:
+- `./scripts/verify-phase.sh 7` verifies reviewer documentation, AI evidence, backend tests, frontend lint, and frontend build.

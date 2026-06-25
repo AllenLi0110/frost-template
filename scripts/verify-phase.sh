@@ -28,6 +28,8 @@ check_no_sensitive_patterns() {
   [[ -d features ]] && paths+=(features)
   [[ -d .github ]] && paths+=(.github)
   [[ -d scripts ]] && paths+=(scripts)
+  [[ -f README.md ]] && paths+=(README.md)
+  [[ -f .env.example ]] && paths+=(.env.example)
 
   if [[ "${#paths[@]}" -gt 0 ]]; then
     ! grep -RInE "/Users/[[:alnum:]_.-]+/|([A-Z0-9_]*(SECRET|PRIVATE_KEY|API_KEY)[A-Z0-9_]*[[:space:]]*[:=])" "${paths[@]}"
@@ -1572,7 +1574,51 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-'
+  '
+}
+
+check_required_text() {
+  local file="$1"
+  local text="$2"
+
+  if ! grep -Fq "$text" "$file"; then
+    echo "${file} is missing required text: ${text}"
+    exit 1
+  fi
+}
+
+check_phase_seven_docs() {
+  test -f features/reviewer-experience.feature
+  test -f docs/contracts/reviewer-experience.md
+  test -f docs/ai-native/logs/phase-7-agent-run-report.md
+
+  check_required_text README.md "Manual Acceptance Checklist"
+  check_required_text README.md 'Wallet addresses are visible in the `Wallet Derivation` section.'
+  check_required_text README.md "https://faucet.solana.com/"
+  check_required_text README.md "solana airdrop 0.5 <WALLET_0_ADDRESS> --url devnet"
+  check_required_text README.md "Open Explorer"
+  check_required_text README.md "AI Collaboration Evidence"
+  check_required_text README.md "CI And Versioning"
+  check_required_text README.md "Troubleshooting"
+  check_required_text README.md "Out Of Scope"
+  check_required_text README.md "./scripts/verify-phase.sh 7"
+
+  check_required_text .env.example "SOLANA_RPC_URL="
+  check_required_text .env.example "NEXT_PUBLIC_COORDINATOR_URL="
+
+  check_required_text features/reviewer-experience.feature "Feature: Reviewer experience and handoff"
+  check_required_text docs/contracts/reviewer-experience.md "Manual Devnet transfer success must not be claimed unless a funded derived wallet was actually used."
+  check_required_text docs/ai-native/05-verification-harness.md "Phase 7: Reviewer Experience And Hardening"
+  check_required_text docs/ai-native/logs/ai-collaboration-log.md "Phase 7 Reviewer Experience And Hardening"
+  check_required_text docs/ai-native/logs/decision-log.md "Make Reviewer Handoff A First-Class Contract"
+}
+
+check_phase_seven_stack() {
+  docker compose config >/dev/null
+  docker compose run --rm --no-deps coordinator cargo test --workspace
+  npm --prefix frontend run lint
+  npm --prefix frontend run build
+  check_phase_seven_docs
 }
 
 case "$phase" in
@@ -1615,6 +1661,11 @@ case "$phase" in
     check_phase_six_stack
     cleanup_phase_six_stack
     trap - EXIT
+    ;;
+  7)
+    check_no_sensitive_patterns
+    git diff --check
+    check_phase_seven_stack
     ;;
   *)
     echo "No verification harness is defined for phase ${phase} yet."

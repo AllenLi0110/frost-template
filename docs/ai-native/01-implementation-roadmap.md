@@ -190,6 +190,10 @@ Scope:
 - Security review.
 - End-to-end acceptance checklist.
 
+Phase 7 scope clarification:
+- This phase does not add new protocol features. It hardens the handoff surface so a reviewer can run, fund, test, troubleshoot, and inspect the AI-native evidence without guessing the intended flow.
+- Devnet transfer success stays a manual acceptance step because CI must not depend on a funded wallet, faucet availability, or live Devnet balance.
+
 Definition of done:
 - Reviewer can run one command and follow README acceptance steps.
 - AI workflow documentation explains prompts, corrections, decisions, and test evidence.

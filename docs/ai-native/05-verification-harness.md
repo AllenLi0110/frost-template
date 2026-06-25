@@ -196,7 +196,8 @@ The script verifies:
 
 - Backend workspace tests, including child-wallet signature verification.
 - Frontend lint and production build.
-- Docker Compose startup with `SOLANA_RPC_URL=mock://phase6`.
+- Docker Compose startup in an isolated project with `SOLANA_RPC_URL=mock://phase6`.
+- Isolated host ports `13000`, `18080`, and `15432`, so mock verification does not overwrite the normal Devnet demo stack.
 - DKG, wallet creation, signing rounds, aggregate/broadcast, and confirmation.
 - Broadcast is rejected before `READY_TO_AGGREGATE`.
 - Broadcast stores transaction signature and Explorer URL.
@@ -204,3 +205,26 @@ The script verifies:
 - Frontend broadcast controls render.
 
 Manual Devnet verification is still required with a funded derived wallet because CI must not depend on a live wallet balance or external airdrop availability.
+
+## Phase 7: Reviewer Experience And Hardening
+
+Purpose:
+- Confirm the repository is ready for reviewer execution, explanation, and AI-collaboration inspection.
+
+Expected checks:
+
+```bash
+./scripts/verify-phase.sh 7
+```
+
+The script verifies:
+
+- Sensitive-pattern scan and whitespace checks.
+- Docker Compose config.
+- Backend workspace tests.
+- Frontend lint and production build.
+- Reviewer README contains setup, manual acceptance, Devnet funding, troubleshooting, AI evidence, CI/versioning, and out-of-scope guidance.
+- `.env.example` exists as an empty variable template and documents `SOLANA_RPC_URL`.
+- Reviewer BDD scenario, reviewer contract, collaboration log, decision log, and Phase 7 run report exist.
+
+Manual Devnet verification remains a human acceptance step because it requires a funded Devnet wallet and live RPC/faucet availability.
