@@ -356,7 +356,7 @@ Refresh the frontend and confirm completed DKG, derived wallets, and signing req
 Coordinator responses should not contain private field names:
 
 ```bash
-curl -s http://localhost:8080/api/dkg/sessions
+curl -s http://localhost:8080/api/dkg/sessions/active
 curl -s http://localhost:8080/api/wallets
 curl -s http://localhost:8080/api/signing-requests
 ```
