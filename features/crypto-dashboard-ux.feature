@@ -29,5 +29,6 @@ Feature: Crypto dashboard UX
 
   Scenario: Review on a mobile viewport
     When the reviewer opens the frontend on a phone-sized screen
-    Then the page should keep the workflow, vaults, transfer ticket, and receipt in one vertical flow
+    Then the page should keep the workflow, active scene, and wallet status in one screen
+    And the reviewer should move between scenes with the workflow stepper instead of page scrolling
     And the active step animation should not block manual protocol controls

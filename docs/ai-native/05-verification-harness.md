@@ -246,6 +246,7 @@ The script verifies:
 - Frontend lint and production build.
 - Phase 8 BDD scenario, UX contract, prompt, collaboration log, decision log, and run report exist.
 - The frontend source contains the required dashboard labels: `MPC Wallet Dashboard`, `Key Ceremony`, `Derived Vaults`, `Transfer Tickets`, `Threshold Signing`, `Transaction Receipt`, `Solana Devnet`, and `2-of-2 MPC`.
-- The frontend CSS contains active workflow-step styling and a reduced-motion fallback for the mobile-friendly stepper.
+- The frontend source contains the current-action panel and terminal scene layout.
+- The CSS contains active workflow-step styling, single-screen terminal layout styling, horizontal mobile rail styling for narrow screens, and a reduced-motion fallback.
 
 Phase 8 is frontend UX only. Manual Devnet verification remains the same as Phase 7.

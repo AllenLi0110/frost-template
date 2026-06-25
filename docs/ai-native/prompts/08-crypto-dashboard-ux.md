@@ -23,8 +23,10 @@ Scope:
   - Signing Requests -> Transfer Tickets
 - Add a five-step workflow:
   Key Ceremony, Vault Funding, Transfer Intent, Threshold Signing, Broadcast.
-- Make the workflow mobile-friendly:
-  - one-page top-to-bottom flow
+- Make the workflow mobile-friendly and exchange-like:
+  - single-screen scene flow
+  - no page-level scrolling for the normal demo path
+  - scene switching through the workflow stepper
   - active/completed/queued step states
   - lightweight active-step animation
   - reduced-motion fallback
@@ -46,6 +48,6 @@ Definition of done:
 - Phase 8 verification passes.
 - Frontend lint and build pass.
 - Reviewer can still complete the same manual acceptance checklist.
-- UI reads like a crypto MPC wallet dashboard instead of a raw protocol test panel.
-- Mobile viewport presents the flow clearly enough for a short demo recording.
+- UI reads like a crypto MPC wallet terminal instead of a raw protocol test panel.
+- Mobile viewport presents the flow in one screen clearly enough for a short demo recording.
 ```

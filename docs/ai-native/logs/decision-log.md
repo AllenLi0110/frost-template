@@ -272,10 +272,12 @@ Verification:
 
 Decision:
 - Phase 8 changes only the reviewer-facing frontend language and layout. It does not change backend APIs, FROST protocol behavior, Solana transaction construction, or persistence.
+- After user review, Phase 8 presents the workflow as a single-screen exchange-style terminal instead of a scroll-based dashboard.
 
 Context:
 - The completed project is functionally correct but visually reads like a protocol test panel.
 - For interview review, the user wants the product to feel closer to a crypto MPC wallet workflow.
+- The user specifically asked for a simpler OKX/exchange-inspired flow with animated scene transitions and no page-level scrolling.
 
 Options considered:
 - Build a generic exchange-style trading screen.
@@ -290,7 +292,9 @@ Consequences:
 - Wallet derivation becomes Derived Vaults.
 - Signing requests become Transfer Tickets.
 - The five-step workflow becomes a mobile-friendly active stepper with completed, current, and queued states.
+- The five-step workflow also acts as a scene switcher for Key Ceremony, Vault Funding, Transfer Tickets, Threshold Signing, and Broadcast.
+- Narrow screens use app-like horizontal rails for workflow and summary state while keeping the normal demo path in one viewport.
 - Manual Node A / Node B controls remain visible and independently clickable.
 
 Verification:
-- `./scripts/verify-phase.sh 8` verifies the UX labels, active workflow styling, reduced-motion handling, and preserves Phase 7 checks.
+- `./scripts/verify-phase.sh 8` verifies the UX labels, terminal layout, active workflow styling, reduced-motion handling, and preserves Phase 7 checks.

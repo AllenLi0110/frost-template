@@ -151,6 +151,9 @@ export default function Home() {
     recipientAddress: defaultRecipientAddress,
     amountLamports: "1000",
   });
+  const [selectedWorkflowIndex, setSelectedWorkflowIndex] = useState<
+    number | null
+  >(null);
   const [lastAction, setLastAction] = useState<ActionEntry>({
     label: "Ready",
     status: "idle",
@@ -187,6 +190,14 @@ export default function Home() {
       ).length ?? 0
     );
   }, [selectedSigningRequest]);
+
+  const copyableWallet = useMemo(() => {
+    return (
+      wallets.find((wallet) => wallet.wallet_index === selectedSenderIndex) ??
+      wallets[0] ??
+      null
+    );
+  }, [selectedSenderIndex, wallets]);
 
   const hasFundedVault = useMemo(() => {
     return wallets.some((wallet) => wallet.balance_status === "AVAILABLE");
@@ -230,6 +241,13 @@ export default function Home() {
       return index === activeWorkflowIndex ? "active" : "idle";
     });
   }, [activeWorkflowIndex, hasFundedVault, selectedSigningRequest, session]);
+
+  useEffect(() => {
+    setSelectedWorkflowIndex(activeWorkflowIndex);
+  }, [activeWorkflowIndex]);
+
+  const visibleWorkflowIndex = selectedWorkflowIndex ?? activeWorkflowIndex;
+  const visibleWorkflowStep = workflowSteps[visibleWorkflowIndex];
 
   async function loadActiveSession() {
     setIsLoading(true);
@@ -458,6 +476,34 @@ export default function Home() {
     });
   }
 
+  async function copyWalletAddress() {
+    if (!copyableWallet) {
+      setLastAction({
+        label: "Copy unavailable",
+        status: "error",
+        message: "Create a derived vault before copying a wallet address.",
+      });
+      return;
+    }
+
+    try {
+      await writeClipboardText(copyableWallet.address_base58);
+      setLastAction({
+        label: "Vault address copied",
+        status: "ok",
+        message: `Vault ${copyableWallet.wallet_index} address copied: ${shortAddress(
+          copyableWallet.address_base58,
+        )}.`,
+      });
+    } catch (error) {
+      setLastAction({
+        label: "Copy failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+    }
+  }
+
   async function createSigningRequest() {
     if (selectedSenderIndex === null) {
       setLastAction({
@@ -669,12 +715,16 @@ export default function Home() {
 
       <section className="workflow-steps" aria-label="MPC wallet workflow">
         {workflowSteps.map((step, index) => (
-          <div
+          <button
             aria-current={
-              workflowStepStates[index] === "active" ? "step" : undefined
+              visibleWorkflowIndex === index ? "step" : undefined
             }
-            className={`workflow-step workflow-step-${workflowStepStates[index]}`}
+            className={`workflow-step workflow-step-${workflowStepStates[index]} ${
+              visibleWorkflowIndex === index ? "workflow-step-selected" : ""
+            }`}
             key={step.label}
+            onClick={() => setSelectedWorkflowIndex(index)}
+            type="button"
           >
             <span>{index + 1}</span>
             <div>
@@ -682,100 +732,570 @@ export default function Home() {
               <em>{step.detail}</em>
             </div>
             <small>{workflowStepLabel(workflowStepStates[index])}</small>
-          </div>
+          </button>
         ))}
       </section>
 
-      <section className="metric-strip" aria-label="MPC wallet summary">
-        <Metric
-          label="Ceremony"
-          value={session ? shortId(session.session_id) : "Not started"}
-        />
-        <Metric label="MPC Status" value={session?.status ?? "NOT_CREATED"} />
-        <Metric label="Ceremony Steps" value={`${completedSteps}/6 completed`} />
-        <Metric
-          label="Master Key"
-          value={session?.master_public_key_base58 ?? "Pending"}
-        />
-        <Metric label="Derived Vaults" value={`${wallets.length}`} />
-        <Metric label="Transfer Tickets" value={`${signingRequests.length}`} />
-        <Metric
-          label="Signature Shares"
-          value={
-            selectedSigningRequest
-              ? `${completedSigningSteps}/4 collected`
-              : "No ticket"
-          }
-        />
-        <Metric
-          label="Receipt"
-          value={
-            selectedSigningRequest?.transaction_signature
-              ? "Available"
-              : "Pending"
-          }
-        />
-      </section>
-
-      <section className="workflow-layout">
-        <div className="control-panel">
-          <div className="section-heading">
+      <section className="terminal-layout" aria-label="MPC wallet terminal">
+        <section className="scene-panel" aria-live="polite">
+          <div className="scene-heading">
             <div>
-              <p className="eyebrow">Step 1</p>
-              <h2>Key Ceremony</h2>
-              <p className="section-copy">
-                Run each node round manually so reviewers can watch the public
-                DKG transcript advance while private shares stay sealed.
-              </p>
+              <p className="eyebrow">Scene {visibleWorkflowIndex + 1}</p>
+              <h2>{visibleWorkflowStep.label}</h2>
+              <p>{visibleWorkflowStep.detail}</p>
             </div>
-            <span className={statusClass(session?.status ?? "NOT_CREATED")}>
-              {session?.status ?? "NOT_CREATED"}
+            <span className={statusClass(workflowStepStates[visibleWorkflowIndex])}>
+              {workflowStepLabel(workflowStepStates[visibleWorkflowIndex])}
             </span>
           </div>
 
-          <div className="round-grid" role="list">
-            {nodes.map((node) =>
-              rounds.map((round) => {
-                const step = findStep(session, node.id, round);
-                const actionKey = `${node.id}-${round}`;
-                const isPending = pendingAction === actionKey;
-                const isReplay = step.status === "COMPLETED";
+          <div className="scene-body">
+            {visibleWorkflowIndex === 0 ? (
+              <div className="scene-stack">
+                <div className="scene-copy">
+                  <strong>2-of-2 MPC key ceremony</strong>
+                  <p>
+                    Drive the public DKG transcript one node round at a time.
+                    Private root shares stay sealed inside the TSS nodes.
+                  </p>
+                </div>
+                <div className="round-grid" role="list">
+                  {nodes.map((node) =>
+                    rounds.map((round) => {
+                      const step = findStep(session, node.id, round);
+                      const actionKey = `${node.id}-${round}`;
+                      const isPending = pendingAction === actionKey;
+                      const isReplay = step.status === "COMPLETED";
 
-                return (
-                  <article
-                    className="round-cell"
-                    key={actionKey}
-                    role="listitem"
-                  >
-                    <div>
-                      <p className="round-node">{node.label}</p>
-                      <h3>DKG Round {round}</h3>
-                    </div>
-                    <span className={statusClass(step.status)}>{step.status}</span>
+                      return (
+                        <article
+                          className="round-cell"
+                          key={actionKey}
+                          role="listitem"
+                        >
+                          <div>
+                            <p className="round-node">{node.label}</p>
+                            <h3>DKG Round {round}</h3>
+                          </div>
+                          <span className={statusClass(step.status)}>
+                            {step.status}
+                          </span>
+                          <button
+                            className="round-button"
+                            disabled={!session || pendingAction !== null}
+                            onClick={() => void triggerRound(node.id, round)}
+                            type="button"
+                          >
+                            {isPending ? "Running..." : isReplay ? "Replay" : "Run"}
+                          </button>
+                        </article>
+                      );
+                    }),
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {visibleWorkflowIndex === 1 ? (
+              <div className="scene-stack">
+                <div className="scene-toolbar">
+                  <div className="scene-copy">
+                    <strong>Derived Vaults</strong>
+                    <p>
+                      Create public Solana Devnet vault addresses from the
+                      completed key ceremony, then refresh balances after funding.
+                    </p>
+                  </div>
+                  <div className="wallet-actions">
                     <button
-                      className="round-button"
-                      disabled={!session || pendingAction !== null}
-                      onClick={() => void triggerRound(node.id, round)}
+                      className="primary-button"
+                      disabled={
+                        session?.status !== "COMPLETED" ||
+                        pendingWalletAction !== null
+                      }
+                      onClick={() => void createWallet()}
                       type="button"
                     >
-                      {isPending ? "Running..." : isReplay ? "Replay" : "Run"}
+                      {pendingWalletAction === "create-wallet"
+                        ? "Creating..."
+                        : "Create Vault"}
                     </button>
-                  </article>
-                );
-              }),
-            )}
-          </div>
-        </div>
+                    <button
+                      className="secondary-button"
+                      disabled={isWalletLoading}
+                      onClick={() => void loadWallets()}
+                      type="button"
+                    >
+                      {isWalletLoading ? "Refreshing..." : "Refresh"}
+                    </button>
+                  </div>
+                </div>
 
-        <aside className="state-panel" aria-label="DKG state detail">
-          <div>
-            <p className="eyebrow">Operations Console</p>
-            <h2>Latest Result</h2>
+                {wallets.length === 0 ? (
+                  <div className="empty-wallet-state">
+                    <strong>No derived vaults</strong>
+                    <p>
+                      {session?.status === "COMPLETED"
+                        ? "Create the first derived vault from the completed key ceremony."
+                        : "Complete the key ceremony before deriving vaults."}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="wallet-list" role="list">
+                    {wallets.map((wallet) => {
+                      const balanceActionKey = `balance-${wallet.wallet_index}`;
+                      const isSelected =
+                        selectedSenderIndex === wallet.wallet_index;
+
+                      return (
+                        <article
+                          className="wallet-row"
+                          key={wallet.wallet_index}
+                          role="listitem"
+                        >
+                          <div className="wallet-index">
+                            <span>Vault</span>
+                            <strong>{wallet.wallet_index}</strong>
+                          </div>
+                          <div className="wallet-address">
+                            <span>{wallet.derivation_path}</span>
+                            <strong>{wallet.address_base58}</strong>
+                          </div>
+                          <div className="wallet-balance">
+                            <span className={statusClass(wallet.balance_status)}>
+                              {wallet.balance_status}
+                            </span>
+                            <strong>{formatBalance(wallet.balance_lamports)}</strong>
+                            {wallet.balance_error_message ? (
+                              <p>{wallet.balance_error_message}</p>
+                            ) : null}
+                          </div>
+                          <div className="wallet-row-actions">
+                            <button
+                              className="round-button"
+                              disabled={pendingWalletAction !== null}
+                              onClick={() =>
+                                void refreshBalance(wallet.wallet_index)
+                              }
+                              type="button"
+                            >
+                              {pendingWalletAction === balanceActionKey
+                                ? "Checking..."
+                                : "Balance"}
+                            </button>
+                            <button
+                              className={
+                                isSelected ? "primary-button" : "secondary-button"
+                              }
+                              disabled={pendingWalletAction !== null}
+                              onClick={() => selectSender(wallet.wallet_index)}
+                              type="button"
+                            >
+                              {isSelected ? "Selected" : "Select"}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {visibleWorkflowIndex === 2 ? (
+              <div className="scene-stack">
+                <div className="scene-toolbar">
+                  <div className="scene-copy">
+                    <strong>Transfer Tickets</strong>
+                    <p>
+                      Pick a funded sender vault, enter a Devnet recipient, and
+                      create the ticket that will be signed by both TSS nodes.
+                    </p>
+                  </div>
+                  <div className="wallet-actions">
+                    <button
+                      className="secondary-button"
+                      disabled={isSigningLoading}
+                      onClick={() => void loadSigningRequests()}
+                      type="button"
+                    >
+                      {isSigningLoading ? "Refreshing..." : "Refresh Tickets"}
+                    </button>
+                  </div>
+                </div>
+                <div className="transfer-form" aria-label="Create transfer ticket">
+                  <div className="transfer-fields">
+                    <label>
+                      <span>Sender Vault</span>
+                      <select
+                        disabled={
+                          wallets.length === 0 || pendingSigningAction !== null
+                        }
+                        onChange={(event) => {
+                          if (event.target.value) {
+                            selectSender(Number(event.target.value));
+                          }
+                        }}
+                        value={selectedSenderIndex ?? ""}
+                      >
+                        <option value="">Select vault</option>
+                        {wallets.map((wallet) => (
+                          <option
+                            key={wallet.wallet_index}
+                            value={wallet.wallet_index}
+                          >
+                            Vault {wallet.wallet_index} -{" "}
+                            {shortAddress(wallet.address_base58)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Recipient</span>
+                      <input
+                        onChange={(event) =>
+                          setTransferForm((current) => ({
+                            ...current,
+                            recipientAddress: event.target.value,
+                          }))
+                        }
+                        placeholder="Paste a Devnet wallet address"
+                        value={transferForm.recipientAddress}
+                      />
+                    </label>
+                    <label>
+                      <span>Lamports</span>
+                      <input
+                        inputMode="numeric"
+                        min="1"
+                        onChange={(event) =>
+                          setTransferForm((current) => ({
+                            ...current,
+                            amountLamports: event.target.value,
+                          }))
+                        }
+                        type="number"
+                        value={transferForm.amountLamports}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    className="primary-button transfer-submit"
+                    disabled={
+                      selectedSenderIndex === null || pendingSigningAction !== null
+                    }
+                    onClick={() => void createSigningRequest()}
+                    type="button"
+                  >
+                    {pendingSigningAction === "create-signing-request"
+                      ? "Creating..."
+                      : "Create Ticket"}
+                  </button>
+                </div>
+                <div className="request-list" role="list">
+                  {signingRequests.length === 0 ? (
+                    <div className="empty-wallet-state">
+                      <strong>No transfer tickets</strong>
+                      <p>Create a ticket after selecting a sender vault.</p>
+                    </div>
+                  ) : (
+                    signingRequests.map((request) => {
+                      const isSelected =
+                        selectedSigningRequest?.request_id === request.request_id;
+
+                      return (
+                        <button
+                          className={
+                            isSelected
+                              ? "request-row request-row-selected"
+                              : "request-row"
+                          }
+                          key={request.request_id}
+                          onClick={() =>
+                            setSelectedSigningRequestId(request.request_id)
+                          }
+                          role="listitem"
+                          type="button"
+                        >
+                          <span>
+                            <strong>{shortId(request.request_id)}</strong>
+                            <small>Vault {request.wallet_index}</small>
+                          </span>
+                          <span className={statusClass(request.status)}>
+                            {request.status}
+                          </span>
+                          <span className="request-amount">
+                            {formatLamports(request.amount_lamports)}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {visibleWorkflowIndex === 3 ? (
+              <div className="scene-stack">
+                <div className="scene-copy">
+                  <strong>Threshold Signing</strong>
+                  <p>
+                    Each node first publishes signing commitments, then returns
+                    one consumed signature share for the selected transfer ticket.
+                  </p>
+                </div>
+                {selectedSigningRequest ? (
+                  <>
+                    <div className="selected-request-summary">
+                      <div>
+                        <p className="eyebrow">Selected Ticket</p>
+                        <h3>{shortId(selectedSigningRequest.request_id)}</h3>
+                      </div>
+                      <span className={statusClass(selectedSigningRequest.status)}>
+                        {selectedSigningRequest.status}
+                      </span>
+                    </div>
+                    <div className="signing-round-grid" role="list">
+                      {nodes.map((node) =>
+                        signingRounds.map((round) => {
+                          const step = findSigningStep(
+                            selectedSigningRequest,
+                            node.id,
+                            round,
+                          );
+                          const actionKey = `signing-${selectedSigningRequest.request_id}-${node.id}-${round}`;
+                          const isPending = pendingSigningAction === actionKey;
+                          const isRoundTwoReplay =
+                            round === 2 && step.status === "COMPLETED";
+
+                          return (
+                            <article
+                              className="round-cell signing-round-cell"
+                              key={actionKey}
+                              role="listitem"
+                            >
+                              <div>
+                                <p className="round-node">{node.label}</p>
+                                <h3>
+                                  {round === 1
+                                    ? "Commitment Round"
+                                    : "Signature Share Round"}
+                                </h3>
+                              </div>
+                              <span className={statusClass(step.status)}>
+                                {step.status}
+                              </span>
+                              <button
+                                className="round-button"
+                                disabled={
+                                  pendingSigningAction !== null ||
+                                  isRoundTwoReplay
+                                }
+                                onClick={() =>
+                                  void triggerSigningRound(node.id, round)
+                                }
+                                type="button"
+                              >
+                                {isPending
+                                  ? "Running..."
+                                  : step.status === "COMPLETED"
+                                    ? round === 1
+                                      ? "Replay"
+                                      : "Consumed"
+                                    : "Run"}
+                              </button>
+                            </article>
+                          );
+                        }),
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-wallet-state">
+                    <strong>No transfer ticket selected</strong>
+                    <p>Create or select a ticket before collecting signatures.</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {visibleWorkflowIndex === 4 ? (
+              <div className="scene-stack">
+                <div className="scene-copy">
+                  <strong>Broadcast</strong>
+                  <p>
+                    Aggregate both signature shares, submit the Devnet
+                    transaction, and open the Solana Explorer receipt.
+                  </p>
+                </div>
+                {selectedSigningRequest ? (
+                  <>
+                    <dl className="request-facts">
+                      <div>
+                        <dt>Sender Vault</dt>
+                        <dd>
+                          {shortAddress(
+                            selectedSigningRequest.sender_address_base58,
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Recipient</dt>
+                        <dd>
+                          {shortAddress(
+                            selectedSigningRequest.recipient_address_base58,
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Message</dt>
+                        <dd>
+                          {selectedSigningRequest.message_hash_hex
+                            ? shortId(selectedSigningRequest.message_hash_hex)
+                            : "Pending"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Transaction Receipt</dt>
+                        <dd>
+                          {selectedSigningRequest.transaction_signature
+                            ? shortId(selectedSigningRequest.transaction_signature)
+                            : "Not sent"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="broadcast-actions">
+                      <div className="receipt-heading">
+                        <p className="eyebrow">Transaction Receipt</p>
+                        <strong>
+                          {selectedSigningRequest.transaction_signature
+                            ? shortId(selectedSigningRequest.transaction_signature)
+                            : "Not broadcast"}
+                        </strong>
+                      </div>
+                      <button
+                        className="primary-button"
+                        disabled={
+                          selectedSigningRequest.status !==
+                            "READY_TO_AGGREGATE" ||
+                          pendingSigningAction !== null
+                        }
+                        onClick={() => void broadcastSigningRequest()}
+                        type="button"
+                      >
+                        {pendingSigningAction ===
+                        `broadcast-${selectedSigningRequest.request_id}`
+                          ? "Broadcasting..."
+                          : "Aggregate & Broadcast"}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          selectedSigningRequest.status !== "BROADCASTED" ||
+                          pendingSigningAction !== null
+                        }
+                        onClick={() => void refreshSigningConfirmation()}
+                        type="button"
+                      >
+                        {pendingSigningAction ===
+                        `confirm-${selectedSigningRequest.request_id}`
+                          ? "Checking..."
+                          : "Refresh Confirmation"}
+                      </button>
+                      {selectedSigningRequest.explorer_url ? (
+                        <a
+                          className="explorer-link"
+                          href={selectedSigningRequest.explorer_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open Explorer
+                        </a>
+                      ) : null}
+                    </div>
+                    {selectedSigningRequest.error_message ? (
+                      <p className="request-error">
+                        {selectedSigningRequest.error_message}
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="empty-wallet-state">
+                    <strong>No transfer ticket selected</strong>
+                    <p>Create or select a ticket before broadcasting.</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
-          <div className={actionClass(lastAction.status)}>
-            <strong>{lastAction.label}</strong>
-            <p>{lastAction.message}</p>
+        </section>
+
+        <aside className="terminal-side" aria-label="Wallet status">
+          <div className="summary-stack" aria-label="MPC wallet summary">
+            <div className="summary-card">
+              <div className="summary-card-row">
+                <span>Ceremony</span>
+                <strong>{session ? shortId(session.session_id) : "Not started"}</strong>
+              </div>
+              <div className="summary-card-row">
+                <span>MPC Status</span>
+                <strong>{session?.status ?? "NOT_CREATED"}</strong>
+              </div>
+              <div className="summary-key">
+                <span>Master Key</span>
+                <strong>
+                  {session?.master_public_key_base58
+                    ? shortAddress(session.master_public_key_base58)
+                    : "Pending"}
+                </strong>
+              </div>
+            </div>
+
+            <div className="metric-strip">
+              <Metric label="Steps" value={`${completedSteps}/6`} />
+              <Metric label="Vaults" value={`${wallets.length}`} />
+              <Metric label="Tickets" value={`${signingRequests.length}`} />
+              <Metric
+                label="Shares"
+                value={
+                  selectedSigningRequest
+                    ? `${completedSigningSteps}/4`
+                    : "No ticket"
+                }
+              />
+              <Metric
+                label="Receipt"
+                value={
+                  selectedSigningRequest?.transaction_signature
+                    ? "Available"
+                    : "Pending"
+                }
+              />
+            </div>
           </div>
+
+          <div className="next-action-panel" aria-label="Current wallet action">
+            <div>
+              <p className="eyebrow">Now</p>
+              <h2>{visibleWorkflowStep.label}</h2>
+              <p>{visibleWorkflowStep.detail}</p>
+              <button
+                className="copy-address-button"
+                disabled={!copyableWallet}
+                onClick={() => void copyWalletAddress()}
+                type="button"
+              >
+                {copyableWallet
+                  ? `Copy Vault ${copyableWallet.wallet_index} Address`
+                  : "No Vault Address"}
+              </button>
+            </div>
+            <div className={actionClass(lastAction.status)}>
+              <strong>{lastAction.label}</strong>
+              <p>{lastAction.message}</p>
+            </div>
+          </div>
+
           <div className="boundary-list">
             <h3>Custody Boundary</h3>
             <p>Browser calls Coordinator only.</p>
@@ -783,400 +1303,6 @@ export default function Home() {
             <p>Private root and child shares stay node-local.</p>
           </div>
         </aside>
-      </section>
-
-      <section className="wallet-panel" aria-labelledby="wallet-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Step 2</p>
-            <h2 id="wallet-title">Derived Vaults</h2>
-            <p className="section-copy">
-              Create Solana Devnet vault addresses from public DKG context,
-              then fund a sender vault with test SOL.
-            </p>
-          </div>
-          <div className="wallet-actions">
-            <button
-              className="primary-button"
-              disabled={
-                session?.status !== "COMPLETED" || pendingWalletAction !== null
-              }
-              onClick={() => void createWallet()}
-              type="button"
-            >
-              {pendingWalletAction === "create-wallet"
-                ? "Creating..."
-                : "Create Vault"}
-            </button>
-            <button
-              className="secondary-button"
-              disabled={isWalletLoading}
-              onClick={() => void loadWallets()}
-              type="button"
-            >
-              {isWalletLoading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-        </div>
-
-        {wallets.length === 0 ? (
-          <div className="empty-wallet-state">
-            <strong>No derived vaults</strong>
-            <p>
-              {session?.status === "COMPLETED"
-                ? "Create the first derived vault from the completed key ceremony."
-                : "Complete the key ceremony before deriving vaults."}
-            </p>
-          </div>
-        ) : (
-          <div className="wallet-list" role="list">
-            {wallets.map((wallet) => {
-              const balanceActionKey = `balance-${wallet.wallet_index}`;
-              const isSelected = selectedSenderIndex === wallet.wallet_index;
-
-              return (
-                <article className="wallet-row" key={wallet.wallet_index} role="listitem">
-                  <div className="wallet-index">
-                    <span>Vault</span>
-                    <strong>{wallet.wallet_index}</strong>
-                  </div>
-                  <div className="wallet-address">
-                    <span>{wallet.derivation_path}</span>
-                    <strong>{wallet.address_base58}</strong>
-                  </div>
-                  <div className="wallet-balance">
-                    <span className={statusClass(wallet.balance_status)}>
-                      {wallet.balance_status}
-                    </span>
-                    <strong>{formatBalance(wallet.balance_lamports)}</strong>
-                    {wallet.balance_error_message ? (
-                      <p>{wallet.balance_error_message}</p>
-                    ) : null}
-                  </div>
-                  <div className="wallet-row-actions">
-                    <button
-                      className="round-button"
-                      disabled={pendingWalletAction !== null}
-                      onClick={() => void refreshBalance(wallet.wallet_index)}
-                      type="button"
-                    >
-                      {pendingWalletAction === balanceActionKey
-                        ? "Checking..."
-                        : "Balance"}
-                    </button>
-                    <button
-                      className={isSelected ? "primary-button" : "secondary-button"}
-                      disabled={pendingWalletAction !== null}
-                      onClick={() => selectSender(wallet.wallet_index)}
-                      type="button"
-                    >
-                      {isSelected ? "Selected" : "Select"}
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="signing-panel" aria-labelledby="signing-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Steps 3-5</p>
-            <h2 id="signing-title">Transfer Tickets</h2>
-            <p className="section-copy">
-              Create a transfer ticket, collect signer commitments and
-              signature shares, then broadcast a Devnet transaction receipt.
-            </p>
-          </div>
-          <button
-            className="secondary-button"
-            disabled={isSigningLoading}
-            onClick={() => void loadSigningRequests()}
-            type="button"
-          >
-            {isSigningLoading ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-
-        <div className="transfer-form" aria-label="Create transfer ticket">
-          <label>
-            <span>Sender Vault</span>
-            <select
-              disabled={wallets.length === 0 || pendingSigningAction !== null}
-              onChange={(event) => {
-                if (event.target.value) {
-                  selectSender(Number(event.target.value));
-                }
-              }}
-              value={selectedSenderIndex ?? ""}
-            >
-              <option value="">Select vault</option>
-              {wallets.map((wallet) => (
-                <option key={wallet.wallet_index} value={wallet.wallet_index}>
-                  Vault {wallet.wallet_index} - {shortAddress(wallet.address_base58)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Recipient</span>
-            <input
-              onChange={(event) =>
-                setTransferForm((current) => ({
-                  ...current,
-                  recipientAddress: event.target.value,
-                }))
-              }
-              placeholder="Paste a Devnet wallet address"
-              value={transferForm.recipientAddress}
-            />
-          </label>
-          <label>
-            <span>Lamports</span>
-            <input
-              inputMode="numeric"
-              min="1"
-              onChange={(event) =>
-                setTransferForm((current) => ({
-                  ...current,
-                  amountLamports: event.target.value,
-                }))
-              }
-              type="number"
-              value={transferForm.amountLamports}
-            />
-          </label>
-          <button
-            className="primary-button"
-            disabled={
-              selectedSenderIndex === null || pendingSigningAction !== null
-            }
-            onClick={() => void createSigningRequest()}
-            type="button"
-          >
-            {pendingSigningAction === "create-signing-request"
-              ? "Creating..."
-              : "Create Ticket"}
-          </button>
-        </div>
-
-        <div className="signing-layout">
-          <div className="request-list" role="list">
-            {signingRequests.length === 0 ? (
-              <div className="empty-wallet-state">
-                <strong>No transfer tickets</strong>
-                <p>Create a transfer ticket after selecting a sender vault.</p>
-              </div>
-            ) : (
-              signingRequests.map((request) => {
-                const isSelected =
-                  selectedSigningRequest?.request_id === request.request_id;
-
-                return (
-                  <button
-                    className={
-                      isSelected ? "request-row request-row-selected" : "request-row"
-                    }
-                    key={request.request_id}
-                    onClick={() => setSelectedSigningRequestId(request.request_id)}
-                    role="listitem"
-                    type="button"
-                  >
-                    <span>
-                      <strong>{shortId(request.request_id)}</strong>
-                      <small>Vault {request.wallet_index}</small>
-                    </span>
-                    <span className={statusClass(request.status)}>
-                      {request.status}
-                    </span>
-                    <span className="request-amount">
-                      {formatLamports(request.amount_lamports)}
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          <div className="signing-controls">
-            <div className="selected-request-summary">
-              <div>
-                <p className="eyebrow">Selected Ticket</p>
-                <h3>
-                  {selectedSigningRequest
-                    ? shortId(selectedSigningRequest.request_id)
-                    : "None"}
-                </h3>
-              </div>
-              <span
-                className={statusClass(
-                  selectedSigningRequest?.status ?? "NOT_CREATED",
-                )}
-              >
-                {selectedSigningRequest?.status ?? "NOT_CREATED"}
-              </span>
-            </div>
-
-            {selectedSigningRequest ? (
-              <>
-                <dl className="request-facts">
-                  <div>
-                    <dt>Sender Vault</dt>
-                    <dd>{shortAddress(selectedSigningRequest.sender_address_base58)}</dd>
-                  </div>
-                  <div>
-                    <dt>Recipient</dt>
-                    <dd>
-                      {shortAddress(
-                        selectedSigningRequest.recipient_address_base58,
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Message</dt>
-                    <dd>
-                      {selectedSigningRequest.message_hash_hex
-                        ? shortId(selectedSigningRequest.message_hash_hex)
-                        : "Pending"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Blockhash</dt>
-                    <dd>
-                      {selectedSigningRequest.recent_blockhash
-                        ? shortId(selectedSigningRequest.recent_blockhash)
-                        : "Pending"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Transaction Receipt</dt>
-                    <dd>
-                      {selectedSigningRequest.transaction_signature
-                        ? shortId(selectedSigningRequest.transaction_signature)
-                        : "Not sent"}
-                    </dd>
-                  </div>
-                </dl>
-
-                <div className="signing-round-grid" role="list">
-                  {nodes.map((node) =>
-                    signingRounds.map((round) => {
-                      const step = findSigningStep(
-                        selectedSigningRequest,
-                        node.id,
-                        round,
-                      );
-                      const actionKey = `signing-${selectedSigningRequest.request_id}-${node.id}-${round}`;
-                      const isPending = pendingSigningAction === actionKey;
-                      const isRoundTwoReplay =
-                        round === 2 && step.status === "COMPLETED";
-
-                      return (
-                        <article
-                          className="round-cell signing-round-cell"
-                          key={actionKey}
-                          role="listitem"
-                        >
-                          <div>
-                            <p className="round-node">{node.label}</p>
-                            <h3>
-                              {round === 1
-                                ? "Commitment Round"
-                                : "Signature Share Round"}
-                            </h3>
-                          </div>
-                          <span className={statusClass(step.status)}>
-                            {step.status}
-                          </span>
-                          <button
-                            className="round-button"
-                            disabled={
-                              pendingSigningAction !== null || isRoundTwoReplay
-                            }
-                            onClick={() =>
-                              void triggerSigningRound(node.id, round)
-                            }
-                            type="button"
-                          >
-                            {isPending
-                              ? "Running..."
-                              : step.status === "COMPLETED"
-                                ? round === 1
-                                  ? "Replay"
-                                  : "Consumed"
-                                : "Run"}
-                          </button>
-                        </article>
-                      );
-                    }),
-                  )}
-                </div>
-
-                <div className="broadcast-actions">
-                  <div className="receipt-heading">
-                    <p className="eyebrow">Transaction Receipt</p>
-                    <strong>
-                      {selectedSigningRequest.transaction_signature
-                        ? shortId(selectedSigningRequest.transaction_signature)
-                        : "Not broadcast"}
-                    </strong>
-                  </div>
-                  <button
-                    className="primary-button"
-                    disabled={
-                      selectedSigningRequest.status !== "READY_TO_AGGREGATE" ||
-                      pendingSigningAction !== null
-                    }
-                    onClick={() => void broadcastSigningRequest()}
-                    type="button"
-                  >
-                    {pendingSigningAction ===
-                    `broadcast-${selectedSigningRequest.request_id}`
-                      ? "Broadcasting..."
-                      : "Aggregate & Broadcast"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={
-                      selectedSigningRequest.status !== "BROADCASTED" ||
-                      pendingSigningAction !== null
-                    }
-                    onClick={() => void refreshSigningConfirmation()}
-                    type="button"
-                  >
-                    {pendingSigningAction ===
-                    `confirm-${selectedSigningRequest.request_id}`
-                      ? "Checking..."
-                      : "Refresh Confirmation"}
-                  </button>
-                  {selectedSigningRequest.explorer_url ? (
-                    <a
-                      className="explorer-link"
-                      href={selectedSigningRequest.explorer_url}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      Open Explorer
-                    </a>
-                  ) : null}
-                </div>
-
-                {selectedSigningRequest.error_message ? (
-                  <p className="request-error">
-                    {selectedSigningRequest.error_message}
-                  </p>
-                ) : null}
-              </>
-            ) : (
-              <div className="empty-wallet-state">
-                <strong>No transfer ticket selected</strong>
-                <p>Create or select a ticket to collect threshold signatures.</p>
-              </div>
-            )}
-          </div>
-        </div>
       </section>
     </main>
   );
@@ -1261,6 +1387,30 @@ function hasErrorMessage(payload: unknown): payload is { error: string } {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+async function writeClipboardText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return;
+  } catch {
+    const textArea = document.createElement("textarea");
+    textArea.value = value;
+    textArea.setAttribute("readonly", "");
+    textArea.style.position = "fixed";
+    textArea.style.left = "-9999px";
+    textArea.style.top = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+
+    const didCopy = document.execCommand("copy");
+    document.body.removeChild(textArea);
+
+    if (!didCopy) {
+      throw new Error("Clipboard copy was blocked by the browser.");
+    }
+  }
 }
 
 function shortId(value: string): string {

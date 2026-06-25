@@ -27,8 +27,9 @@ Key Ceremony -> Vault Funding -> Transfer Intent -> Threshold Signing -> Broadca
 The workflow is a visual orientation layer. It must:
 
 - Show the current step, completed steps, and queued steps.
-- Use a mobile-friendly one-page layout that reads top-to-bottom.
+- Use a single-screen scene layout: the reviewer changes scenes by clicking the workflow stepper instead of scrolling through stacked sections.
 - Use lightweight step animation for the active protocol stage.
+- Keep the workflow and compact status summaries available as app-like rails on narrow screens without creating page-level scroll.
 - Respect reduced-motion settings.
 - Not become an automated one-click protocol runner.
 
@@ -53,15 +54,17 @@ The UI must clearly state:
 
 ## Visual Direction
 
-Use a restrained crypto operations dashboard style:
+Use a restrained crypto exchange operations style inspired by modern exchange onboarding and wallet flows:
 
 - Dense but readable operational layout.
-- Mobile-first one-page flow suitable for a demo recording.
-- Animated status stepper for the current protocol stage.
+- Mobile-first single-screen flow suitable for a demo recording.
+- Animated scene transitions for the current protocol stage.
+- App-like summary chips instead of dense dashboard tables on narrow screens.
 - Clear network, threshold, and security badges.
 - Status colors for confirmed, pending, failed, and idle states.
 - No landing-page hero, no decorative gradients, and no decorative orbs.
 - No card nesting beyond actual repeated items and tool panels.
+- Do not copy an exchange brand, logo, proprietary layout, or exact wording.
 
 ## Verification
 
@@ -70,5 +73,5 @@ Use a restrained crypto operations dashboard style:
 - Phase 7 checks still pass.
 - Frontend lint and build pass.
 - The production HTML or CSS contains the Phase 8 dashboard labels.
-- CSS contains active workflow step styling and reduced-motion handling.
+- CSS contains active workflow step styling, single-screen terminal layout styling, and reduced-motion handling.
 - BDD, contract, prompt, collaboration log, decision log, and Phase 8 run report exist.

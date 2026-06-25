@@ -1635,8 +1635,12 @@ check_phase_eight_docs() {
   check_required_text frontend/app/page.tsx "Transaction Receipt"
   check_required_text frontend/app/page.tsx "Solana Devnet"
   check_required_text frontend/app/page.tsx "2-of-2 MPC"
+  check_required_text frontend/app/page.tsx "next-action-panel"
+  check_required_text frontend/app/page.tsx "terminal-layout"
   check_required_text frontend/app/layout.tsx "FROST MPC Wallet"
   check_required_text frontend/app/globals.css "workflow-step-active"
+  check_required_text frontend/app/globals.css "terminal-layout"
+  check_required_text frontend/app/globals.css "grid-auto-flow: column"
   check_required_text frontend/app/globals.css "prefers-reduced-motion"
 
   check_required_text features/crypto-dashboard-ux.feature "Feature: Crypto dashboard UX"
