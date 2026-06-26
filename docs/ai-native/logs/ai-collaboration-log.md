@@ -375,6 +375,78 @@ Evidence links:
 Follow-up:
 - Run the manual acceptance checklist on the PR branch before merge if reviewer screenshots or fresh Devnet evidence are requested.
 
+### 2026-06-26 - Phase 8 Crypto Dashboard UX
+
+Prompt summary:
+- The user asked how to make the app feel more like a crypto workflow, then started Phase 8.
+
+Important context provided:
+- The existing app works but reads like a protocol control panel.
+- The user wants a reviewer-friendly crypto operations dashboard without changing the underlying challenge requirements.
+- After the first pass, the user clarified that the style should feel more like a mobile one-page flow with animated process steps.
+- The user later said the current UI/UX was still unsatisfactory and asked for a larger crypto/mobile redesign.
+- The user then clarified the target further: reference OKX/exchange-style clarity and exchange registration/login-style step transitions, keep everything in one screen, avoid page scrolling, and keep the result simple.
+
+AI output summary:
+- Added Phase 8 prompt, BDD scenarios, and crypto dashboard UX contract.
+- Planned a frontend-only reframing into an MPC wallet dashboard.
+- Preserved all manual DKG and signing controls as non-negotiable challenge behavior.
+- Added active/completed/queued workflow states, active-step animation, and reduced-motion handling for a mobile-friendly one-page demo flow.
+- Reworked the visual system toward a mobile wallet app: dark app header, horizontal workflow rail, swipeable summary chips, persistent vault watch, and more compact operation cards.
+- Reworked the UI again into a single-screen exchange-style terminal: clickable scene stepper, active scene panel, compact side/bottom wallet status, and no page-level scroll in the normal demo path.
+- Refined the mobile layout again after the user pointed out cramped DKG round cards and crowded metrics: DKG controls became compact rows, and summary state became a primary status card with secondary metric chips.
+- Refined workflow selection semantics after the user clarified that `Now` should not imply selected-scene highlighting, and added a copy-vault-address button to the side action panel.
+- Refined the Transfer Intent form after the user noted the form had awkward blank space and an oversized `Create Ticket` action.
+- Added manual `Next Step` gates after Vault Funding and Threshold Signing so demo recording does not jump scenes before the user is ready.
+- Replaced light table rows with dark wallet-style cards for vaults, transfer tickets, and broadcast receipt controls.
+- Added a dashboard screenshot to the top of README for immediate reviewer context.
+
+Human corrections:
+- Requested a mobile-friendly one-page style with animated workflow steps before committing and opening the draft PR.
+- Rejected the mobile wallet/dashboard feel and requested a cleaner exchange-style single-screen flow with animated scene transitions.
+- Noted that the stage-to-scene flow was correct, but the DKG control cards and summary metrics were visually cramped and needed better presentation.
+- Clarified that the current `Now` stage may stay labeled, but only the scene being viewed should receive the highlighted border.
+- Clarified that the ticket form should not use a large landing-page-style CTA inside the compact terminal layout.
+
+Verification:
+- Command: `bash -n scripts/verify-phase.sh`
+- Result: passed
+- Command: `npm --prefix frontend run lint`
+- Result: passed
+- Command: `npm --prefix frontend run build`
+- Result: passed
+- Command: `./scripts/verify-phase.sh 8`
+- Result: passed
+- Check: `390x844` browser viewport
+- Result: passed; no horizontal overflow, single-screen terminal present, workflow scene switching present, reduced-motion CSS present
+
+Evidence links:
+- Files: `features/crypto-dashboard-ux.feature`, `docs/contracts/crypto-dashboard-ux.md`, `docs/ai-native/prompts/08-crypto-dashboard-ux.md`, `frontend/app/page.tsx`, `frontend/app/globals.css`
+
+Follow-up:
+- Capture a short demo video after the Phase 8 UI is reviewed.
+
+### 2026-06-26 - Phase 8 CI Harness Alignment
+
+Prompt summary:
+- The user noticed the GitHub `Integration verification` check failed after several minutes and asked why this was not caught locally before pushing.
+
+AI output summary:
+- Diagnosed that CI still ran `./scripts/verify-phase.sh 6`, while Phase 8 had changed the visible dashboard copy and broadcast layout.
+- Updated the latest integration job to run `./scripts/verify-phase.sh 8`.
+- Updated Phase 8 verification so it runs the full Phase 6 mock Solana integration before Phase 7 and Phase 8 documentation checks.
+- Updated the frontend smoke test to expect the current MPC wallet dashboard labels and broadcast grid styling.
+
+Human corrections:
+- Asked to keep the merge gate reliable and aligned with local verification.
+
+Verification:
+- Command: `./scripts/verify-phase.sh 8`
+- Result: passed after harness alignment
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `scripts/verify-phase.sh`, `docs/ai-native/05-verification-harness.md`
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

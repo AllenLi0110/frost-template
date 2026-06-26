@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FROST Template",
-  description: "Step-by-step 2-of-2 FROST DKG Solana wallet demo",
+  title: "FROST MPC Wallet",
+  description: "2-of-2 MPC wallet dashboard for Solana Devnet transfers",
 };
 
 export default function RootLayout({

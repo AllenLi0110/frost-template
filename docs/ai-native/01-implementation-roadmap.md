@@ -200,3 +200,22 @@ Definition of done:
 
 Suggested prompt:
 - `prompts/07-reviewer-hardening.md`
+
+## Phase 8: Crypto Dashboard UX
+
+Goal: Reframe the frontend from a raw protocol control panel into an institutional MPC wallet dashboard for reviewer demos.
+
+Scope:
+- Rename visible sections into crypto product language: Key Ceremony, Derived Vaults, Transfer Tickets, Threshold Signing, and Transaction Receipt.
+- Add a five-step workflow from key ceremony to broadcast.
+- Keep Node A / Node B manual round controls independently clickable.
+- Keep Devnet and private-material boundary messaging visible.
+- Do not change backend APIs, FROST crypto behavior, database schema, or Solana transaction semantics.
+
+Definition of done:
+- Reviewer can understand the app as a crypto MPC wallet workflow from the first viewport.
+- Existing manual acceptance flow still works.
+- `./scripts/verify-phase.sh 8` passes.
+
+Suggested prompt:
+- `prompts/08-crypto-dashboard-ux.md`

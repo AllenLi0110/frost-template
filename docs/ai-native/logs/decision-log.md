@@ -267,3 +267,51 @@ Consequences:
 
 Verification:
 - `./scripts/verify-phase.sh 7` verifies reviewer documentation, AI evidence, backend tests, frontend lint, and frontend build.
+
+### 2026-06-26 - Reframe UX Without Changing Protocol Semantics
+
+Decision:
+- Phase 8 changes only the reviewer-facing frontend language and layout. It does not change backend APIs, FROST protocol behavior, Solana transaction construction, or persistence.
+- After user review, Phase 8 presents the workflow as a single-screen exchange-style terminal instead of a scroll-based dashboard.
+
+Context:
+- The completed project is functionally correct but visually reads like a protocol test panel.
+- For interview review, the user wants the product to feel closer to a crypto MPC wallet workflow.
+- The user specifically asked for a simpler OKX/exchange-inspired flow with animated scene transitions and no page-level scrolling.
+
+Options considered:
+- Build a generic exchange-style trading screen.
+- Keep the raw protocol panel unchanged.
+- Reframe the existing controls as an institutional MPC wallet dashboard.
+
+Reasoning:
+- A trading screen would misrepresent the assignment because the app is a custody/signing workflow, not an order book. Reframing the existing controls as wallet operations improves reviewer comprehension without hiding the assignment-critical manual rounds.
+
+Consequences:
+- DKG becomes Key Ceremony in the UI.
+- Wallet derivation becomes Derived Vaults.
+- Signing requests become Transfer Tickets.
+- The five-step workflow becomes a mobile-friendly active stepper with completed, current, and queued states.
+- The five-step workflow also acts as a scene switcher for Key Ceremony, Vault Funding, Transfer Tickets, Threshold Signing, and Broadcast.
+- Vault Funding and Threshold Signing require explicit `Next Step` confirmation before advancing, so balance refreshes and individual signing rounds do not surprise the reviewer during a demo recording.
+- The side panel favors a persistent vault watch over transient action text, so derived wallet balances remain visible through signing and broadcast.
+- Narrow screens use app-like horizontal rails for workflow and summary state while keeping the normal demo path in one viewport.
+- Manual Node A / Node B controls remain visible and independently clickable.
+
+Verification:
+- `./scripts/verify-phase.sh 8` runs the full Phase 6 mock Solana integration, then verifies the Phase 7 handoff docs plus Phase 8 UX labels, terminal layout, active workflow styling, and reduced-motion handling.
+
+### 2026-06-26 - Keep Latest CI Aligned With Latest Phase Harness
+
+Decision:
+- The `Integration verification` GitHub Actions job must run the latest phase harness instead of a stale lower-phase harness.
+- Phase 8 must include the existing Phase 6 mock Solana integration so local verification and PR CI prove the same end-to-end behavior.
+
+Context:
+- GitHub Actions caught a stale Phase 6 frontend smoke check that still expected the old `FROST Template` homepage text and `display: flex` broadcast actions.
+- Phase 8 intentionally changed the reviewer-facing dashboard copy and broadcast layout while preserving protocol behavior.
+
+Consequences:
+- `./scripts/verify-phase.sh 8` is now the command to run before pushing the Phase 8 PR.
+- CI keeps the stable required status check name `Integration verification`, but the implementation runs the latest harness.
+- The frontend smoke test now checks the current MPC wallet dashboard labels and broadcast grid styling.
