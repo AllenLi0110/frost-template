@@ -601,8 +601,9 @@ h3 {
   text-align: left;
 }
 
-.next-action-panel {
+.vault-watch-panel {
   display: grid;
+  min-height: 0;
   gap: 8px;
   border: 1px solid #334039;
   border-radius: 8px;
@@ -611,15 +612,107 @@ h3 {
   padding: 11px;
 }
 
-.next-action-panel h2 {
+.vault-watch-header {
+  display: flex;
+  min-width: 0;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vault-watch-panel h2 {
   font-size: 1.08rem;
 }
 
-.next-action-panel p {
+.vault-watch-panel p {
   margin-bottom: 0;
   color: var(--muted-strong);
   font-size: 0.84rem;
   line-height: 1.35;
+}
+
+.vault-watch-refresh {
+  min-width: 88px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.vault-watch-list {
+  display: grid;
+  min-height: 0;
+  gap: 7px;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: #34423b transparent;
+}
+
+.vault-watch-row,
+.vault-watch-empty {
+  min-width: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #111714;
+  padding: 9px;
+}
+
+.vault-watch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.vault-watch-main,
+.vault-watch-balance {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.vault-watch-main span,
+.vault-watch-main small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.vault-watch-main strong,
+.vault-watch-balance strong,
+.vault-watch-empty strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 0.9rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-watch-main small,
+.vault-watch-balance strong {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.vault-watch-balance {
+  justify-items: end;
+  text-align: right;
+}
+
+.vault-watch-row .status-pill {
+  justify-content: center;
+}
+
+.vault-watch-row .copy-address-button {
+  grid-column: 1 / -1;
+  width: auto;
+  min-height: 32px;
+  margin-top: 0;
+  justify-self: end;
+  padding: 0 14px;
+}
+
+.vault-watch-empty p {
+  margin-top: 4px;
 }
 
 .copy-address-button {
@@ -717,14 +810,23 @@ h3 {
 
 .wallet-row {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) minmax(138px, 190px) 150px;
+  grid-template-areas:
+    "index balance"
+    "address address"
+    "actions actions";
+  grid-template-columns: minmax(0, 1fr) minmax(148px, 190px);
   gap: 10px;
-  align-items: center;
+  align-items: stretch;
   border: 1px solid var(--panel-border);
   border-radius: 8px;
-  background: var(--panel-strong);
-  color: var(--ink);
-  padding: 10px;
+  background: #0b0f0d;
+  color: var(--foreground);
+  padding: 12px;
+}
+
+.wallet-row:hover {
+  border-color: rgba(0, 211, 149, 0.5);
+  background: #0f1713;
 }
 
 .wallet-index,
@@ -733,14 +835,63 @@ h3 {
   min-width: 0;
 }
 
+.wallet-index {
+  display: flex;
+  grid-area: index;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #111714;
+  padding: 10px;
+}
+
+.wallet-address {
+  display: grid;
+  grid-area: address;
+  gap: 8px;
+  border: 1px solid rgba(0, 211, 149, 0.14);
+  border-radius: 8px;
+  background: #080d0b;
+  padding: 10px;
+}
+
+.wallet-balance {
+  display: grid;
+  grid-area: balance;
+  min-width: 0;
+  justify-items: end;
+  align-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #111714;
+  padding: 10px;
+  text-align: right;
+}
+
 .wallet-index span,
 .wallet-address span {
   display: block;
-  margin-bottom: 5px;
-  color: #697874;
+  color: var(--muted);
   font-size: 0.76rem;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.wallet-index span {
+  margin-bottom: 0;
+}
+
+.wallet-address span {
+  width: fit-content;
+  border: 1px solid rgba(0, 211, 149, 0.22);
+  border-radius: 999px;
+  background: rgba(0, 211, 149, 0.08);
+  color: var(--green);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  padding: 4px 8px;
+  text-transform: none;
 }
 
 .wallet-index strong {
@@ -749,8 +900,8 @@ h3 {
   height: 36px;
   place-items: center;
   border-radius: 999px;
-  background: var(--ink);
-  color: var(--foreground);
+  background: rgba(0, 211, 149, 0.14);
+  color: var(--green);
   font-size: 0.96rem;
 }
 
@@ -758,23 +909,20 @@ h3 {
 .wallet-balance strong {
   display: block;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--foreground);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .wallet-address strong {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 0.92rem;
-}
-
-.wallet-balance {
-  display: grid;
-  gap: 6px;
+  font-size: 1rem;
+  letter-spacing: 0;
 }
 
 .wallet-balance strong {
   font-size: 0.92rem;
+  text-align: right;
 }
 
 .wallet-balance p {
@@ -787,8 +935,11 @@ h3 {
 
 .wallet-row-actions {
   display: grid;
+  grid-area: actions;
   grid-template-columns: 1fr 1fr;
   gap: 7px;
+  width: min(100%, 270px);
+  justify-self: end;
 }
 
 .wallet-row-actions .primary-button,
@@ -879,18 +1030,20 @@ h3 {
   align-items: center;
   border: 1px solid var(--panel-border);
   border-radius: 8px;
-  background: var(--panel-strong);
-  color: var(--ink);
+  background: #0b0f0d;
+  color: var(--foreground);
   padding: 10px;
   text-align: left;
 }
 
 .request-row:hover {
-  border-color: var(--green);
+  border-color: rgba(0, 211, 149, 0.5);
+  background: #0f1713;
 }
 
 .request-row-selected {
   border-color: var(--green);
+  background: #101a15;
   box-shadow: inset 3px 0 0 var(--green);
 }
 
@@ -910,7 +1063,7 @@ h3 {
 .request-row small,
 .request-amount {
   margin-top: 4px;
-  color: #697874;
+  color: var(--muted);
   font-size: 0.8rem;
   font-weight: 900;
 }
@@ -928,6 +1081,11 @@ h3 {
   border-radius: 8px;
   background: #0b0f0d;
   padding: 12px;
+}
+
+.signing-next-button {
+  min-width: 132px;
+  padding: 0 14px;
 }
 
 .request-facts {
@@ -970,13 +1128,17 @@ h3 {
   align-items: center;
   border: 1px solid var(--panel-border);
   border-radius: 8px;
-  background: var(--panel-strong);
-  color: var(--ink);
+  background: #0b0f0d;
+  color: var(--foreground);
   padding: 12px;
 }
 
 .receipt-heading {
   min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: #111714;
+  padding: 10px;
 }
 
 .receipt-heading .eyebrow {
@@ -987,6 +1149,7 @@ h3 {
 .receipt-heading strong {
   display: block;
   overflow: hidden;
+  color: var(--foreground);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.8rem;
   text-overflow: ellipsis;
@@ -998,10 +1161,10 @@ h3 {
   min-height: 40px;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--line-on-light);
+  border: 1px solid #303b36;
   border-radius: 8px;
-  background: #ffffff;
-  color: var(--ink);
+  background: #111714;
+  color: var(--foreground);
   font-size: 0.86rem;
   font-weight: 900;
   padding: 0 13px;
@@ -1010,7 +1173,7 @@ h3 {
 
 .explorer-link:hover {
   border-color: var(--green);
-  color: var(--green-strong);
+  color: var(--green);
 }
 
 .request-error {
@@ -1209,11 +1372,11 @@ h3 {
     font-size: 0.84rem;
   }
 
-  .next-action-panel h2 {
+  .vault-watch-panel h2 {
     font-size: 1.18rem;
   }
 
-  .next-action-panel p,
+  .vault-watch-panel p,
   .action-result p,
   .empty-wallet-state p,
   .request-facts dd,
@@ -1281,16 +1444,12 @@ h3 {
   }
 
   body .terminal-side {
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   body .summary-stack {
     align-content: start;
     grid-template-rows: auto auto;
-  }
-
-  body .terminal-side .next-action-panel {
-    display: none;
   }
 
   body .scene-heading {
@@ -1390,11 +1549,10 @@ h3 {
   }
 
   .wallet-row {
-    grid-template-columns: 48px minmax(0, 1fr) 132px;
+    grid-template-columns: minmax(0, 1fr) minmax(128px, 160px);
   }
 
   .wallet-row-actions {
-    grid-column: 1 / -1;
     grid-template-columns: 1fr 1fr;
   }
 
@@ -1594,7 +1752,7 @@ h3 {
     padding: 7px;
   }
 
-  .terminal-side .next-action-panel {
+  .terminal-side .vault-watch-panel {
     display: none;
   }
 
@@ -1668,18 +1826,33 @@ h3 {
   }
 
   .wallet-row {
-    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-areas:
+      "index"
+      "address"
+      "balance"
+      "actions";
+    grid-template-columns: 1fr;
     gap: 8px;
     padding: 8px;
   }
 
-  .wallet-balance,
-  .wallet-row-actions {
-    grid-column: 1 / -1;
+  .wallet-index {
+    padding: 8px;
+  }
+
+  .wallet-address,
+  .wallet-balance {
+    padding: 9px;
+  }
+
+  .wallet-balance {
+    justify-items: start;
+    text-align: left;
   }
 
   .wallet-row-actions {
     grid-template-columns: 1fr 1fr;
+    width: 100%;
   }
 
   .transfer-form {
@@ -1703,7 +1876,14 @@ h3 {
   }
 
   .selected-request-summary {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
     padding: 9px;
+  }
+
+  .signing-next-button {
+    width: 100%;
   }
 
   .request-facts {

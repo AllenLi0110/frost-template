@@ -154,6 +154,10 @@ export default function Home() {
   const [selectedWorkflowIndex, setSelectedWorkflowIndex] = useState<
     number | null
   >(null);
+  const [isVaultFundingConfirmed, setIsVaultFundingConfirmed] =
+    useState(false);
+  const [isThresholdSigningConfirmed, setIsThresholdSigningConfirmed] =
+    useState(false);
   const [lastAction, setLastAction] = useState<ActionEntry>({
     label: "Ready",
     status: "idle",
@@ -203,12 +207,35 @@ export default function Home() {
     return wallets.some((wallet) => wallet.balance_status === "AVAILABLE");
   }, [wallets]);
 
+  const checkedVaultCount = useMemo(() => {
+    return wallets.filter((wallet) => wallet.balance_status !== "UNKNOWN")
+      .length;
+  }, [wallets]);
+
+  const isVaultFundingReady = useMemo(() => {
+    return wallets.length >= 2 && checkedVaultCount >= 2 && hasFundedVault;
+  }, [checkedVaultCount, hasFundedVault, wallets.length]);
+
+  const isThresholdSigningReady = useMemo(() => {
+    return (
+      selectedSigningRequest?.status === "READY_TO_AGGREGATE" &&
+      completedSigningSteps === 4
+    );
+  }, [completedSigningSteps, selectedSigningRequest?.status]);
+
+  const hasEnteredBroadcast = useMemo(() => {
+    return (
+      selectedSigningRequest?.status === "BROADCASTED" ||
+      selectedSigningRequest?.status === "CONFIRMED"
+    );
+  }, [selectedSigningRequest?.status]);
+
   const activeWorkflowIndex = useMemo(() => {
     if (session?.status !== "COMPLETED") {
       return 0;
     }
 
-    if (!hasFundedVault) {
+    if (!isVaultFundingConfirmed && !selectedSigningRequest) {
       return 1;
     }
 
@@ -216,22 +243,29 @@ export default function Home() {
       return 2;
     }
 
-    if (selectedSigningRequest.status === "PENDING") {
+    if (!isThresholdSigningConfirmed && !hasEnteredBroadcast) {
       return 3;
     }
 
     return 4;
-  }, [hasFundedVault, selectedSigningRequest, session?.status]);
+  }, [
+    hasEnteredBroadcast,
+    isThresholdSigningConfirmed,
+    isVaultFundingConfirmed,
+    selectedSigningRequest,
+    session?.status,
+  ]);
 
   const workflowStepStates = useMemo(() => {
     return workflowSteps.map((_, index) => {
       const isComplete =
         (index === 0 && session?.status === "COMPLETED") ||
-        (index === 1 && hasFundedVault) ||
+        (index === 1 &&
+          (isVaultFundingConfirmed || selectedSigningRequest !== null)) ||
         (index === 2 && selectedSigningRequest !== null) ||
         (index === 3 &&
           selectedSigningRequest !== null &&
-          selectedSigningRequest.status !== "PENDING") ||
+          (isThresholdSigningConfirmed || hasEnteredBroadcast)) ||
         (index === 4 && selectedSigningRequest?.status === "CONFIRMED");
 
       if (isComplete) {
@@ -240,11 +274,34 @@ export default function Home() {
 
       return index === activeWorkflowIndex ? "active" : "idle";
     });
-  }, [activeWorkflowIndex, hasFundedVault, selectedSigningRequest, session]);
+  }, [
+    activeWorkflowIndex,
+    hasEnteredBroadcast,
+    isVaultFundingConfirmed,
+    isThresholdSigningConfirmed,
+    selectedSigningRequest,
+    session,
+  ]);
 
   useEffect(() => {
     setSelectedWorkflowIndex(activeWorkflowIndex);
   }, [activeWorkflowIndex]);
+
+  useEffect(() => {
+    if (session?.status !== "COMPLETED") {
+      setIsVaultFundingConfirmed(false);
+    }
+  }, [session?.status]);
+
+  useEffect(() => {
+    if (!isVaultFundingReady && !selectedSigningRequest) {
+      setIsVaultFundingConfirmed(false);
+    }
+  }, [isVaultFundingReady, selectedSigningRequest]);
+
+  useEffect(() => {
+    setIsThresholdSigningConfirmed(false);
+  }, [selectedSigningRequestId]);
 
   const visibleWorkflowIndex = selectedWorkflowIndex ?? activeWorkflowIndex;
   const visibleWorkflowStep = workflowSteps[visibleWorkflowIndex];
@@ -476,8 +533,33 @@ export default function Home() {
     });
   }
 
-  async function copyWalletAddress() {
-    if (!copyableWallet) {
+  function advanceToTransferIntent() {
+    const fundedWallet = wallets.find(
+      (wallet) => wallet.balance_status === "AVAILABLE",
+    );
+
+    if (!isVaultFundingReady || !fundedWallet) {
+      setLastAction({
+        label: "Vault funding incomplete",
+        status: "error",
+        message:
+          "Create two vaults, refresh both balances, and fund at least one sender vault before continuing.",
+      });
+      return;
+    }
+
+    setSelectedSenderIndex((currentIndex) => currentIndex ?? fundedWallet.wallet_index);
+    setIsVaultFundingConfirmed(true);
+    setSelectedWorkflowIndex(2);
+    setLastAction({
+      label: "Vaults ready",
+      status: "ok",
+      message: `Vault ${fundedWallet.wallet_index} is selected for the transfer intent.`,
+    });
+  }
+
+  async function copyWalletAddress(wallet: Wallet | null = copyableWallet) {
+    if (!wallet) {
       setLastAction({
         label: "Copy unavailable",
         status: "error",
@@ -487,12 +569,12 @@ export default function Home() {
     }
 
     try {
-      await writeClipboardText(copyableWallet.address_base58);
+      await writeClipboardText(wallet.address_base58);
       setLastAction({
         label: "Vault address copied",
         status: "ok",
-        message: `Vault ${copyableWallet.wallet_index} address copied: ${shortAddress(
-          copyableWallet.address_base58,
+        message: `Vault ${wallet.wallet_index} address copied: ${shortAddress(
+          wallet.address_base58,
         )}.`,
       });
     } catch (error) {
@@ -602,6 +684,28 @@ export default function Home() {
     } finally {
       setPendingSigningAction(null);
     }
+  }
+
+  function advanceToBroadcast() {
+    if (!selectedSigningRequest || !isThresholdSigningReady) {
+      setLastAction({
+        label: "Signing incomplete",
+        status: "error",
+        message:
+          "Run both signing rounds for Node A and Node B before broadcasting.",
+      });
+      return;
+    }
+
+    setIsThresholdSigningConfirmed(true);
+    setSelectedWorkflowIndex(4);
+    setLastAction({
+      label: "Signature shares ready",
+      status: "ok",
+      message: `Ticket ${shortId(
+        selectedSigningRequest.request_id,
+      )} is ready to aggregate and broadcast.`,
+    });
   }
 
   async function broadcastSigningRequest() {
@@ -714,26 +818,33 @@ export default function Home() {
       </section>
 
       <section className="workflow-steps" aria-label="MPC wallet workflow">
-        {workflowSteps.map((step, index) => (
-          <button
-            aria-current={
-              visibleWorkflowIndex === index ? "step" : undefined
-            }
-            className={`workflow-step workflow-step-${workflowStepStates[index]} ${
-              visibleWorkflowIndex === index ? "workflow-step-selected" : ""
-            }`}
-            key={step.label}
-            onClick={() => setSelectedWorkflowIndex(index)}
-            type="button"
-          >
-            <span>{index + 1}</span>
-            <div>
-              <strong>{step.label}</strong>
-              <em>{step.detail}</em>
-            </div>
-            <small>{workflowStepLabel(workflowStepStates[index])}</small>
-          </button>
-        ))}
+        {workflowSteps.map((step, index) => {
+          const canOpenStep =
+            index <= activeWorkflowIndex ||
+            workflowStepStates[index] === "complete";
+
+          return (
+            <button
+              aria-current={
+                visibleWorkflowIndex === index ? "step" : undefined
+              }
+              className={`workflow-step workflow-step-${workflowStepStates[index]} ${
+                visibleWorkflowIndex === index ? "workflow-step-selected" : ""
+              }`}
+              disabled={!canOpenStep}
+              key={step.label}
+              onClick={() => setSelectedWorkflowIndex(index)}
+              type="button"
+            >
+              <span>{index + 1}</span>
+              <div>
+                <strong>{step.label}</strong>
+                <em>{step.detail}</em>
+              </div>
+              <small>{workflowStepLabel(workflowStepStates[index])}</small>
+            </button>
+          );
+        })}
       </section>
 
       <section className="terminal-layout" aria-label="MPC wallet terminal">
@@ -827,6 +938,14 @@ export default function Home() {
                       type="button"
                     >
                       {isWalletLoading ? "Refreshing..." : "Refresh"}
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!isVaultFundingReady}
+                      onClick={advanceToTransferIntent}
+                      type="button"
+                    >
+                      Next Step
                     </button>
                   </div>
                 </div>
@@ -1054,6 +1173,14 @@ export default function Home() {
                       <span className={statusClass(selectedSigningRequest.status)}>
                         {selectedSigningRequest.status}
                       </span>
+                      <button
+                        className="primary-button signing-next-button"
+                        disabled={!isThresholdSigningReady}
+                        onClick={advanceToBroadcast}
+                        type="button"
+                      >
+                        Next Step
+                      </button>
                     </div>
                     <div className="signing-round-grid" role="list">
                       {nodes.map((node) =>
@@ -1274,22 +1401,55 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="next-action-panel" aria-label="Current wallet action">
-            <div>
-              <p className="eyebrow">Now</p>
-              <h2>{visibleWorkflowStep.label}</h2>
-              <p>{visibleWorkflowStep.detail}</p>
+          <div className="vault-watch-panel" aria-label="Vault balances">
+            <div className="vault-watch-header">
+              <div>
+                <p className="eyebrow">Vault Watch</p>
+                <h2>Wallet Balances</h2>
+              </div>
               <button
-                className="copy-address-button"
-                disabled={!copyableWallet}
-                onClick={() => void copyWalletAddress()}
+                className="secondary-button vault-watch-refresh"
+                disabled={isWalletLoading}
+                onClick={() => void loadWallets()}
                 type="button"
               >
-                {copyableWallet
-                  ? `Copy Vault ${copyableWallet.wallet_index} Address`
-                  : "No Vault Address"}
+                {isWalletLoading ? "Refreshing..." : "Refresh"}
               </button>
             </div>
+            {wallets.length === 0 ? (
+              <div className="vault-watch-empty">
+                <strong>No vaults yet</strong>
+                <p>Create vaults after completing the key ceremony.</p>
+              </div>
+            ) : (
+              <div className="vault-watch-list">
+                {wallets.map((wallet) => (
+                  <article
+                    className="vault-watch-row"
+                    key={wallet.wallet_index}
+                  >
+                    <div className="vault-watch-main">
+                      <span>Vault {wallet.wallet_index}</span>
+                      <strong>{shortAddress(wallet.address_base58)}</strong>
+                      <small>{wallet.derivation_path}</small>
+                    </div>
+                    <div className="vault-watch-balance">
+                      <span className={statusClass(wallet.balance_status)}>
+                        {wallet.balance_status}
+                      </span>
+                      <strong>{formatSolBalance(wallet.balance_lamports)}</strong>
+                    </div>
+                    <button
+                      className="copy-address-button"
+                      onClick={() => void copyWalletAddress(wallet)}
+                      type="button"
+                    >
+                      Copy
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
             <div className={actionClass(lastAction.status)}>
               <strong>{lastAction.label}</strong>
               <p>{lastAction.message}</p>
@@ -1420,6 +1580,14 @@ function formatBalance(lamports: number | null): string {
   }
 
   return `${lamports} lamports (${(lamports / 1_000_000_000).toFixed(9)} SOL)`;
+}
+
+function formatSolBalance(lamports: number | null): string {
+  if (lamports === null) {
+    return "Not checked";
+  }
+
+  return `${(lamports / 1_000_000_000).toFixed(9)} SOL`;
 }
 
 function formatLamports(lamports: number): string {
