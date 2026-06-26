@@ -242,11 +242,12 @@ Expected checks:
 
 The script verifies:
 
-- Phase 7 reviewer hardening checks still pass.
+- Full Phase 6 mock Solana integration still passes in an isolated Docker Compose project.
+- Phase 7 reviewer hardening documentation checks still pass.
 - Frontend lint and production build.
 - Phase 8 BDD scenario, UX contract, prompt, collaboration log, decision log, and run report exist.
 - The frontend source contains the required dashboard labels: `MPC Wallet Dashboard`, `Key Ceremony`, `Derived Vaults`, `Transfer Tickets`, `Threshold Signing`, `Transaction Receipt`, `Solana Devnet`, and `2-of-2 MPC`.
 - The frontend source contains the vault watch panel and terminal scene layout.
 - The CSS contains active workflow-step styling, single-screen terminal layout styling, horizontal mobile rail styling for narrow screens, and a reduced-motion fallback.
 
-Phase 8 is frontend UX only. Manual Devnet verification remains the same as Phase 7.
+Phase 8 changes the reviewer-facing UX only. Manual Devnet verification remains the same as Phase 7 because CI uses mock Solana RPC.

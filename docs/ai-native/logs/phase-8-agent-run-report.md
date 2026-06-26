@@ -24,6 +24,7 @@ Rework the frontend into a crypto-native MPC wallet dashboard while preserving t
 - Added manual `Next Step` gates after Vault Funding and Threshold Signing so balance refreshes and individual signing rounds do not unexpectedly advance the demo scene.
 - Replaced remaining light rows in vault, transfer ticket, and broadcast receipt cards with dark crypto wallet styling.
 - Added README dashboard screenshot at `public/images/mpc-wallet-dashboard.png`.
+- Aligned the latest verification harness with CI after GitHub Actions exposed stale Phase 6 frontend smoke checks: Phase 8 now runs the full Phase 6 mock Solana integration, then Phase 7 and Phase 8 documentation checks.
 - Preserve all manual Node A / Node B controls.
 - Extend verification to check the crypto dashboard labels.
 

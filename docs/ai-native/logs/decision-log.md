@@ -299,4 +299,19 @@ Consequences:
 - Manual Node A / Node B controls remain visible and independently clickable.
 
 Verification:
-- `./scripts/verify-phase.sh 8` verifies the UX labels, terminal layout, active workflow styling, reduced-motion handling, and preserves Phase 7 checks.
+- `./scripts/verify-phase.sh 8` runs the full Phase 6 mock Solana integration, then verifies the Phase 7 handoff docs plus Phase 8 UX labels, terminal layout, active workflow styling, and reduced-motion handling.
+
+### 2026-06-26 - Keep Latest CI Aligned With Latest Phase Harness
+
+Decision:
+- The `Integration verification` GitHub Actions job must run the latest phase harness instead of a stale lower-phase harness.
+- Phase 8 must include the existing Phase 6 mock Solana integration so local verification and PR CI prove the same end-to-end behavior.
+
+Context:
+- GitHub Actions caught a stale Phase 6 frontend smoke check that still expected the old `FROST Template` homepage text and `display: flex` broadcast actions.
+- Phase 8 intentionally changed the reviewer-facing dashboard copy and broadcast layout while preserving protocol behavior.
+
+Consequences:
+- `./scripts/verify-phase.sh 8` is now the command to run before pushing the Phase 8 PR.
+- CI keeps the stable required status check name `Integration verification`, but the implementation runs the latest harness.
+- The frontend smoke test now checks the current MPC wallet dashboard labels and broadcast grid styling.

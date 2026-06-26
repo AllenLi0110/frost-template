@@ -426,6 +426,27 @@ Evidence links:
 Follow-up:
 - Capture a short demo video after the Phase 8 UI is reviewed.
 
+### 2026-06-26 - Phase 8 CI Harness Alignment
+
+Prompt summary:
+- The user noticed the GitHub `Integration verification` check failed after several minutes and asked why this was not caught locally before pushing.
+
+AI output summary:
+- Diagnosed that CI still ran `./scripts/verify-phase.sh 6`, while Phase 8 had changed the visible dashboard copy and broadcast layout.
+- Updated the latest integration job to run `./scripts/verify-phase.sh 8`.
+- Updated Phase 8 verification so it runs the full Phase 6 mock Solana integration before Phase 7 and Phase 8 documentation checks.
+- Updated the frontend smoke test to expect the current MPC wallet dashboard labels and broadcast grid styling.
+
+Human corrections:
+- Asked to keep the merge gate reliable and aligned with local verification.
+
+Verification:
+- Command: `./scripts/verify-phase.sh 8`
+- Result: passed after harness alignment
+
+Evidence links:
+- Files: `.github/workflows/ci.yml`, `scripts/verify-phase.sh`, `docs/ai-native/05-verification-harness.md`
+
 ## Entry Template
 
 ### YYYY-MM-DD - Phase Name

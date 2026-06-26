@@ -100,7 +100,7 @@ jobs:
         working-directory: frontend
 
       - name: Run latest phase verification harness
-        run: ./scripts/verify-phase.sh 6
+        run: ./scripts/verify-phase.sh 8
 
       - name: Stop containers
         if: always()

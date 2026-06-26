@@ -259,14 +259,12 @@ If `open` is not available, visit [http://localhost:3000](http://localhost:3000)
 
 ```bash
 node scripts/verify-release-metadata.mjs
-docker compose run --rm --no-deps coordinator cargo test --workspace
-npm --prefix frontend run lint
-npm --prefix frontend run build
-./scripts/verify-phase.sh 6
-./scripts/verify-phase.sh 7
+./scripts/verify-phase.sh 8
 ```
 
-`./scripts/verify-phase.sh 6` uses an isolated Docker Compose project with `SOLANA_RPC_URL=mock://phase6`, ports `13000`, `18080`, and `15432`, then removes that mock stack. It does not overwrite the normal Devnet demo stack.
+`./scripts/verify-phase.sh 8` runs the latest reviewer-ready harness. It includes the mock Solana integration from Phase 6, uses an isolated Docker Compose project with `SOLANA_RPC_URL=mock://phase6`, ports `13000`, `18080`, and `15432`, then removes that mock stack. It does not overwrite the normal Devnet demo stack.
+
+Earlier phase-specific checks such as `./scripts/verify-phase.sh 7` remain available, but Phase 8 is the merge gate for this branch.
 
 If you want to force the local demo coordinator back to Devnet:
 

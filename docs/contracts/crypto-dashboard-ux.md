@@ -72,7 +72,8 @@ Use a restrained crypto exchange operations style inspired by modern exchange on
 
 `./scripts/verify-phase.sh 8` must verify:
 
-- Phase 7 checks still pass.
+- Full Phase 6 mock Solana integration still passes.
+- Phase 7 documentation checks still pass.
 - Frontend lint and build pass.
 - The production HTML or CSS contains the Phase 8 dashboard labels.
 - CSS contains active workflow step styling, single-screen terminal layout styling, vault watch styling, and reduced-motion handling.

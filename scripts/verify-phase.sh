@@ -21,6 +21,14 @@ cleanup_phase_six_stack() {
   phase_six_compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 
+check_phase_six_isolated_stack() {
+  trap cleanup_phase_six_stack EXIT
+  cleanup_phase_six_stack
+  check_phase_six_stack
+  cleanup_phase_six_stack
+  trap - EXIT
+}
+
 check_no_sensitive_patterns() {
   local paths=()
 
@@ -1534,40 +1542,53 @@ async function fetchWithRetry(url, attempts = 120) {
 async function main() {
   let html = "";
   let cssBodies = [];
+  let lastError = "";
+  const requiredPageText = [
+    "FROST MPC Wallet",
+    "MPC Wallet Dashboard",
+    "Key Ceremony",
+    "Vault Watch"
+  ];
 
   for (let attempt = 1; attempt <= 120; attempt += 1) {
-    html = (await fetchWithRetry("http://localhost:3000/", 1)).text;
+    try {
+      html = (await fetchWithRetry("http://localhost:3000/", 1)).text;
 
-    if (!html.includes("FROST Template")) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
+      if (!requiredPageText.every((text) => html.includes(text))) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
 
-    const stylesheetPaths = Array.from(html.matchAll(/href="([^"]+\.css)"/g), (match) => match[1]);
+      const stylesheetPaths = Array.from(html.matchAll(/href="([^"]+\.css)"/g), (match) => match[1]);
 
-    if (stylesheetPaths.length === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
+      if (stylesheetPaths.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
 
-    cssBodies = await Promise.all(
-      stylesheetPaths.map(async (path) => {
-        return (await fetchWithRetry(new URL(path, "http://localhost:3000/").toString(), 1)).text;
-      })
-    );
+      cssBodies = await Promise.all(
+        stylesheetPaths.map(async (path) => {
+          return (await fetchWithRetry(new URL(path, "http://localhost:3000/").toString(), 1)).text;
+        })
+      );
 
-    if (cssBodies.some((css) => /\.broadcast-actions\s*\{[^}]*display:\s*flex/.test(css))) {
-      return;
+      if (cssBodies.some((css) => /\.broadcast-actions\s*\{[^}]*display:\s*grid/.test(css))) {
+        return;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
 
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  if (!html.includes("FROST Template")) {
-    throw new Error("frontend did not render the FROST Template page");
+  const missingPageText = requiredPageText.filter((text) => !html.includes(text));
+
+  if (missingPageText.length > 0) {
+    throw new Error(`frontend did not render the MPC wallet dashboard; missing ${missingPageText.join(", ")}${lastError ? `; last error: ${lastError}` : ""}`);
   }
 
-  throw new Error("frontend stylesheet did not include broadcast action styles");
+  throw new Error(`frontend stylesheet did not include broadcast action grid styles${lastError ? `; last error: ${lastError}` : ""}`);
 }
 
 main().catch((error) => {
@@ -1653,7 +1674,8 @@ check_phase_eight_docs() {
 }
 
 check_phase_eight_stack() {
-  check_phase_seven_stack
+  check_phase_six_isolated_stack
+  check_phase_seven_docs
   check_phase_eight_docs
 }
 
@@ -1690,13 +1712,9 @@ case "$phase" in
     check_phase_five_stack
     ;;
   6)
-    trap cleanup_phase_six_stack EXIT
-    cleanup_phase_six_stack
     check_no_sensitive_patterns
     git diff --check
-    check_phase_six_stack
-    cleanup_phase_six_stack
-    trap - EXIT
+    check_phase_six_isolated_stack
     ;;
   7)
     check_no_sensitive_patterns
