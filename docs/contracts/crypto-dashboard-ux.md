@@ -45,10 +45,11 @@ The UI must preserve:
 
 ## Boundary Messaging
 
-The UI must clearly state:
+The reviewer-facing experience must keep the custody boundary clear without forcing a large persistent explainer panel into the demo flow:
 
-- Browser calls Coordinator only.
-- Coordinator stores public protocol state only.
+- The app shell must keep `Solana Devnet`, `2-of-2 MPC`, and test-SOL context visible.
+- The UI copy must continue to state that private root shares stay sealed inside TSS nodes.
+- README and contracts must document that the browser calls Coordinator only and Coordinator stores public protocol state only.
 - TSS nodes keep private root shares, child shares, and nonce secrets node-local.
 - Devnet SOL is test money only.
 
@@ -62,6 +63,7 @@ Use a restrained crypto exchange operations style inspired by modern exchange on
 - App-like summary chips instead of dense dashboard tables on narrow screens.
 - Clear network, threshold, and security badges.
 - Status colors for confirmed, pending, failed, and idle states.
+- A persistent vault watch surface should show derived vault addresses, balance status, and SOL balances during signing and broadcast scenes.
 - No landing-page hero, no decorative gradients, and no decorative orbs.
 - No card nesting beyond actual repeated items and tool panels.
 - Do not copy an exchange brand, logo, proprietary layout, or exact wording.
@@ -73,5 +75,5 @@ Use a restrained crypto exchange operations style inspired by modern exchange on
 - Phase 7 checks still pass.
 - Frontend lint and build pass.
 - The production HTML or CSS contains the Phase 8 dashboard labels.
-- CSS contains active workflow step styling, single-screen terminal layout styling, and reduced-motion handling.
+- CSS contains active workflow step styling, single-screen terminal layout styling, vault watch styling, and reduced-motion handling.
 - BDD, contract, prompt, collaboration log, decision log, and Phase 8 run report exist.

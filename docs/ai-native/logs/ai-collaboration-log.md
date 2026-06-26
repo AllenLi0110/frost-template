@@ -392,11 +392,14 @@ AI output summary:
 - Planned a frontend-only reframing into an MPC wallet dashboard.
 - Preserved all manual DKG and signing controls as non-negotiable challenge behavior.
 - Added active/completed/queued workflow states, active-step animation, and reduced-motion handling for a mobile-friendly one-page demo flow.
-- Reworked the visual system toward a mobile wallet app: dark app header, horizontal workflow rail, swipeable summary chips, current-action panel, and more compact operation cards.
+- Reworked the visual system toward a mobile wallet app: dark app header, horizontal workflow rail, swipeable summary chips, persistent vault watch, and more compact operation cards.
 - Reworked the UI again into a single-screen exchange-style terminal: clickable scene stepper, active scene panel, compact side/bottom wallet status, and no page-level scroll in the normal demo path.
 - Refined the mobile layout again after the user pointed out cramped DKG round cards and crowded metrics: DKG controls became compact rows, and summary state became a primary status card with secondary metric chips.
 - Refined workflow selection semantics after the user clarified that `Now` should not imply selected-scene highlighting, and added a copy-vault-address button to the side action panel.
 - Refined the Transfer Intent form after the user noted the form had awkward blank space and an oversized `Create Ticket` action.
+- Added manual `Next Step` gates after Vault Funding and Threshold Signing so demo recording does not jump scenes before the user is ready.
+- Replaced light table rows with dark wallet-style cards for vaults, transfer tickets, and broadcast receipt controls.
+- Added a dashboard screenshot to the top of README for immediate reviewer context.
 
 Human corrections:
 - Requested a mobile-friendly one-page style with animated workflow steps before committing and opening the draft PR.

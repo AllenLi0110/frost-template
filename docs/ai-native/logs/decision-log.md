@@ -293,6 +293,8 @@ Consequences:
 - Signing requests become Transfer Tickets.
 - The five-step workflow becomes a mobile-friendly active stepper with completed, current, and queued states.
 - The five-step workflow also acts as a scene switcher for Key Ceremony, Vault Funding, Transfer Tickets, Threshold Signing, and Broadcast.
+- Vault Funding and Threshold Signing require explicit `Next Step` confirmation before advancing, so balance refreshes and individual signing rounds do not surprise the reviewer during a demo recording.
+- The side panel favors a persistent vault watch over transient action text, so derived wallet balances remain visible through signing and broadcast.
 - Narrow screens use app-like horizontal rails for workflow and summary state while keeping the normal demo path in one viewport.
 - Manual Node A / Node B controls remain visible and independently clickable.
 
