@@ -1295,13 +1295,6 @@ export default function Home() {
               <p>{lastAction.message}</p>
             </div>
           </div>
-
-          <div className="boundary-list">
-            <h3>Custody Boundary</h3>
-            <p>Browser calls Coordinator only.</p>
-            <p>Coordinator stores public protocol state only.</p>
-            <p>Private root and child shares stay node-local.</p>
-          </div>
         </aside>
       </section>
     </main>
