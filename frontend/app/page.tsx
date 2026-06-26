@@ -170,13 +170,6 @@ export default function Home() {
     void loadSigningRequests();
   }, []);
 
-  const completedSteps = useMemo(() => {
-    return (
-      session?.node_steps.filter((step) => step.status === "COMPLETED").length ??
-      0
-    );
-  }, [session]);
-
   const selectedSigningRequest = useMemo(() => {
     return (
       signingRequests.find(
@@ -724,6 +717,7 @@ export default function Home() {
       const request = await readJson<SigningRequest>(response);
 
       await loadSigningRequests();
+      await loadWallets();
       setSelectedSigningRequestId(request.request_id);
       setLastAction({
         label: "Broadcast submitted",
@@ -760,6 +754,9 @@ export default function Home() {
       const request = await readJson<SigningRequest>(response);
 
       await loadSigningRequests();
+      if (request.status !== "FAILED") {
+        await loadWallets();
+      }
       setSelectedSigningRequestId(request.request_id);
       setLastAction({
         label: "Confirmation refreshed",
@@ -1378,27 +1375,6 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="metric-strip">
-              <Metric label="Steps" value={`${completedSteps}/6`} />
-              <Metric label="Vaults" value={`${wallets.length}`} />
-              <Metric label="Tickets" value={`${signingRequests.length}`} />
-              <Metric
-                label="Shares"
-                value={
-                  selectedSigningRequest
-                    ? `${completedSigningSteps}/4`
-                    : "No ticket"
-                }
-              />
-              <Metric
-                label="Receipt"
-                value={
-                  selectedSigningRequest?.transaction_signature
-                    ? "Available"
-                    : "Pending"
-                }
-              />
-            </div>
           </div>
 
           <div className="vault-watch-panel" aria-label="Vault balances">
@@ -1458,15 +1434,6 @@ export default function Home() {
         </aside>
       </section>
     </main>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
   );
 }
 

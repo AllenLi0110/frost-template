@@ -2,6 +2,14 @@
 
 All notable project changes are tracked here. Versions follow numeric SemVer patch increments.
 
+## [0.1.3] - 2026-06-26
+
+### Changed
+
+- Added a README demo GIF for the MPC wallet dashboard.
+- Refined the demo dashboard by removing ambiguous summary counters from the side panel.
+- Refreshed Vault Watch balances automatically after broadcast and confirmation updates.
+
 ## [0.1.2] - 2026-06-25
 
 ### Added

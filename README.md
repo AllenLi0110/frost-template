@@ -2,7 +2,7 @@
 
 Minimal 2-of-2 FROST Ed25519 Solana Devnet wallet demo with step-by-step DKG, wallet derivation, signing, broadcast, and confirmation.
 
-![MPC Wallet Dashboard](public/images/mpc-wallet-dashboard.png)
+![MPC Wallet Dashboard Demo](public/images/mpc-wallet-dashboard.gif)
 
 ## Table of Contents
 
@@ -124,8 +124,8 @@ Schemas:
 4. Reviewer triggers Node A/B Signing Round 2.
 5. Each node validates the message intent, derives the child signing share in memory, consumes its nonce once, and returns a signature share.
 6. Reviewer clicks Aggregate & Broadcast.
-7. Coordinator aggregates signature shares, builds the Solana transaction, broadcasts it, stores the transaction signature, and exposes an Explorer URL.
-8. Reviewer clicks Refresh Confirmation until the request is CONFIRMED or FAILED.
+7. Coordinator aggregates signature shares, builds the Solana transaction, broadcasts it, stores the transaction signature, exposes an Explorer URL, and the frontend refreshes Vault Watch balances.
+8. Reviewer clicks Refresh Confirmation until the request is CONFIRMED or FAILED; the frontend refreshes Vault Watch balances again after confirmation updates.
 ```
 
 ### DB Schema Summary
@@ -338,9 +338,9 @@ Use a larger amount when sending to a brand-new recipient address because Solana
 9. Run `Node B` Signing Round 2.
 10. Confirm the request status is `READY_TO_AGGREGATE`.
 11. Click `Aggregate & Broadcast`.
-12. Confirm the request status becomes `BROADCASTED`.
+12. Confirm the request status becomes `BROADCASTED` and Vault Watch refreshes the sender balance.
 13. Click `Refresh Confirmation`.
-14. Confirm the request status becomes `CONFIRMED`.
+14. Confirm the request status becomes `CONFIRMED` and Vault Watch refreshes balances again.
 15. Click `Open Explorer` and confirm the Devnet transaction is successful.
 
 ### D. Inspect Persistence
