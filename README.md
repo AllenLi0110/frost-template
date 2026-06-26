@@ -2,6 +2,8 @@
 
 Minimal 2-of-2 FROST Ed25519 Solana Devnet wallet demo with step-by-step DKG, wallet derivation, signing, broadcast, and confirmation.
 
+![MPC Wallet Dashboard](public/images/mpc-wallet-dashboard.png)
+
 ## Table of Contents
 
 - [Specifications](#specifications)
