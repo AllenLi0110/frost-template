@@ -1,0 +1,742 @@
+openapi: 3.1.0
+info:
+  title: FROST Template Coordinator API
+  version: 0.1.3
+  summary: Public Coordinator API for the FROST Ed25519 Solana Devnet wallet demo.
+  description: |
+    This OpenAPI specification documents the public Coordinator API exposed on
+    `http://localhost:8080`.
+
+    Browser clients should call the Coordinator through the Next.js proxy, but
+    reviewers can call these endpoints directly while running the Docker Compose
+    stack. Internal TSS node APIs are intentionally excluded from this public
+    client specification.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose Coordinator
+tags:
+  - name: Health
+    description: Runtime health and TSS node reachability.
+  - name: DKG
+    description: Public distributed key generation session controls.
+  - name: Wallets
+    description: Public Solana Devnet wallet derivation and balance lookup.
+  - name: Signing
+    description: Transfer signing, broadcast, and confirmation workflow.
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Read Coordinator health.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Coordinator runtime configuration summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /health/nodes:
+    get:
+      tags: [Health]
+      summary: Read TSS node reachability.
+      operationId: getNodeHealth
+      responses:
+        "200":
+          description: Reachability for Node A and Node B from the Coordinator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeHealthResponse"
+  /api/dkg/sessions:
+    post:
+      tags: [DKG]
+      summary: Create or read the active DKG session.
+      operationId: createDkgSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDkgSessionRequest"
+            examples:
+              twoOfTwo:
+                value:
+                  threshold: 2
+                  participants: [node-a, node-b]
+      responses:
+        "200":
+          description: Active DKG session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DkgSessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/dkg/sessions/active:
+    get:
+      tags: [DKG]
+      summary: Read the active DKG session.
+      operationId: getActiveDkgSession
+      responses:
+        "200":
+          description: Active DKG session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DkgSessionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/dkg/sessions/{session_id}/nodes/{node_id}/rounds/{round}:
+    post:
+      tags: [DKG]
+      summary: Trigger one DKG round for one node.
+      operationId: triggerDkgRound
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/NodeId"
+        - $ref: "#/components/parameters/DkgRound"
+      responses:
+        "200":
+          description: DKG round result. Replaying a completed step returns the stored public payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerDkgRoundResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/wallets:
+    get:
+      tags: [Wallets]
+      summary: List derived public wallets.
+      operationId: listWallets
+      responses:
+        "200":
+          description: Derived wallets in ascending wallet index order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletListResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [Wallets]
+      summary: Derive the next public wallet.
+      operationId: createWallet
+      responses:
+        "200":
+          description: Newly derived wallet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wallet"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/wallets/{wallet_index}/balance:
+    get:
+      tags: [Wallets]
+      summary: Refresh one wallet balance from Solana Devnet.
+      operationId: refreshWalletBalance
+      parameters:
+        - $ref: "#/components/parameters/WalletIndex"
+      responses:
+        "200":
+          description: Balance lookup result. RPC failures are reported in the response body with `UNAVAILABLE`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletBalanceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/signing-requests:
+    get:
+      tags: [Signing]
+      summary: List signing requests.
+      operationId: listSigningRequests
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Optional signing status filter.
+          schema:
+            $ref: "#/components/schemas/SigningStatus"
+      responses:
+        "200":
+          description: Signing requests in reverse creation order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningRequestListResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [Signing]
+      summary: Create a transfer signing request.
+      operationId: createSigningRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSigningRequestRequest"
+            examples:
+              transferIntent:
+                value:
+                  wallet_index: 0
+                  recipient_address_base58: 6LByMitZ7BejB5QKMuehRjYbrrMEU8RDAisrGV6MAAfE
+                  amount_lamports: 1000
+      responses:
+        "200":
+          description: Created signing request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningRequest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/signing-requests/{request_id}:
+    get:
+      tags: [Signing]
+      summary: Read one signing request.
+      operationId: getSigningRequest
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Signing request with node step statuses.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /api/signing-requests/{request_id}/nodes/{node_id}/rounds/{round}:
+    post:
+      tags: [Signing]
+      summary: Trigger one signing round for one node.
+      operationId: triggerSigningRound
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/NodeId"
+        - $ref: "#/components/parameters/SigningRound"
+      responses:
+        "200":
+          description: Signing round result. Round 1 is replayable; Round 2 consumes the node-local nonce.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriggerSigningRoundResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/signing-requests/{request_id}/broadcast:
+    post:
+      tags: [Signing]
+      summary: Aggregate signature shares and broadcast the Solana transaction.
+      operationId: broadcastSigningRequest
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Updated signing request. Already broadcast or confirmed requests are returned idempotently.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+  /api/signing-requests/{request_id}/confirm:
+    post:
+      tags: [Signing]
+      summary: Refresh Solana transaction confirmation.
+      operationId: refreshSigningConfirmation
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Updated signing request after confirmation lookup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SigningRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+components:
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    NodeId:
+      name: node_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/NodeId"
+    DkgRound:
+      name: round
+      in: path
+      required: true
+      schema:
+        type: integer
+        enum: [1, 2, 3]
+    SigningRound:
+      name: round
+      in: path
+      required: true
+      schema:
+        type: integer
+        enum: [1, 2]
+    WalletIndex:
+      name: wallet_index
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+  responses:
+    BadRequest:
+      description: Invalid request input.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: Current protocol state does not allow this transition.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: TSS node call or Solana RPC call failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: Unexpected server or database error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+      additionalProperties: false
+    NodeId:
+      type: string
+      enum: [node-a, node-b]
+    StepStatus:
+      type: string
+      enum: [NOT_STARTED, RUNNING, COMPLETED, FAILED]
+    DkgStatus:
+      type: string
+      enum:
+        - NOT_STARTED
+        - ROUND_1_IN_PROGRESS
+        - ROUND_1_COMPLETE
+        - ROUND_2_IN_PROGRESS
+        - ROUND_2_COMPLETE
+        - ROUND_3_IN_PROGRESS
+        - COMPLETED
+        - FAILED
+    SigningStatus:
+      type: string
+      enum:
+        - PENDING
+        - COMMITMENTS_IN_PROGRESS
+        - COMMITMENTS_READY
+        - SHARES_IN_PROGRESS
+        - READY_TO_AGGREGATE
+        - BROADCASTED
+        - CONFIRMED
+        - FAILED
+    BalanceStatus:
+      type: string
+      enum: [UNKNOWN, AVAILABLE, UNAVAILABLE]
+    PublicPayload:
+      type: object
+      description: Public protocol payload returned by the Coordinator. Private shares and nonce secrets are never exposed.
+      additionalProperties: true
+    HealthResponse:
+      type: object
+      required:
+        - service
+        - status
+        - database_configured
+        - solana_rpc_configured
+        - node_a_url
+        - node_b_url
+      properties:
+        service:
+          type: string
+          const: coordinator
+        status:
+          type: string
+          const: ok
+        database_configured:
+          type: boolean
+        solana_rpc_configured:
+          type: boolean
+        node_a_url:
+          type: string
+          format: uri
+        node_b_url:
+          type: string
+          format: uri
+      additionalProperties: false
+    NodeHealthResponse:
+      type: object
+      required: [nodes]
+      properties:
+        nodes:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/NodeHealth"
+      additionalProperties: false
+    NodeHealth:
+      type: object
+      required: [node_id, url, reachable]
+      properties:
+        node_id:
+          $ref: "#/components/schemas/NodeId"
+        url:
+          type: string
+          format: uri
+        reachable:
+          type: boolean
+      additionalProperties: false
+    CreateDkgSessionRequest:
+      type: object
+      required: [threshold, participants]
+      properties:
+        threshold:
+          type: integer
+          const: 2
+        participants:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/NodeId"
+          examples:
+            - [node-a, node-b]
+      additionalProperties: false
+    DkgSessionResponse:
+      type: object
+      required: [session_id, status, master_public_key_base58, node_steps]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/DkgStatus"
+        master_public_key_base58:
+          type:
+            - string
+            - "null"
+        node_steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DkgNodeStep"
+      additionalProperties: false
+    DkgNodeStep:
+      type: object
+      required: [node_id, round, status]
+      properties:
+        node_id:
+          $ref: "#/components/schemas/NodeId"
+        round:
+          type: integer
+          enum: [1, 2, 3]
+        status:
+          $ref: "#/components/schemas/StepStatus"
+      additionalProperties: false
+    TriggerDkgRoundResponse:
+      type: object
+      required: [session_id, node_id, round, status, dkg_status, public_payload]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        node_id:
+          $ref: "#/components/schemas/NodeId"
+        round:
+          type: integer
+          enum: [1, 2, 3]
+        status:
+          $ref: "#/components/schemas/StepStatus"
+        dkg_status:
+          $ref: "#/components/schemas/DkgStatus"
+        public_payload:
+          oneOf:
+            - $ref: "#/components/schemas/PublicPayload"
+            - type: "null"
+      additionalProperties: false
+    Wallet:
+      type: object
+      required:
+        - wallet_index
+        - dkg_session_id
+        - derivation_path
+        - public_key_base58
+        - address_base58
+        - balance_lamports
+        - balance_status
+        - balance_error_message
+        - balance_checked_at
+        - created_at
+      properties:
+        wallet_index:
+          type: integer
+          minimum: 0
+        dkg_session_id:
+          type: string
+          format: uuid
+        derivation_path:
+          type: string
+          examples: [m/0]
+        public_key_base58:
+          type: string
+        address_base58:
+          type: string
+        balance_lamports:
+          type:
+            - integer
+            - "null"
+          format: int64
+        balance_status:
+          $ref: "#/components/schemas/BalanceStatus"
+        balance_error_message:
+          type:
+            - string
+            - "null"
+        balance_checked_at:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+      additionalProperties: false
+    WalletListResponse:
+      type: object
+      required: [wallets]
+      properties:
+        wallets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Wallet"
+      additionalProperties: false
+    WalletBalanceResponse:
+      type: object
+      required:
+        - wallet_index
+        - address_base58
+        - balance_lamports
+        - balance_status
+        - balance_error_message
+      properties:
+        wallet_index:
+          type: integer
+          minimum: 0
+        address_base58:
+          type: string
+        balance_lamports:
+          type:
+            - integer
+            - "null"
+          format: int64
+        balance_status:
+          $ref: "#/components/schemas/BalanceStatus"
+        balance_error_message:
+          type:
+            - string
+            - "null"
+      additionalProperties: false
+    CreateSigningRequestRequest:
+      type: object
+      required: [wallet_index, recipient_address_base58, amount_lamports]
+      properties:
+        wallet_index:
+          type: integer
+          minimum: 0
+        recipient_address_base58:
+          type: string
+          description: Solana Devnet recipient address. System Program address is rejected.
+        amount_lamports:
+          type: integer
+          format: int64
+          minimum: 1
+      additionalProperties: false
+    SigningRequestListResponse:
+      type: object
+      required: [requests]
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/SigningRequest"
+      additionalProperties: false
+    SigningRequest:
+      type: object
+      required:
+        - request_id
+        - dkg_session_id
+        - wallet_index
+        - sender_address_base58
+        - recipient_address_base58
+        - amount_lamports
+        - status
+        - message_hash_hex
+        - recent_blockhash
+        - transaction_signature
+        - explorer_url
+        - error_message
+        - created_at
+        - updated_at
+        - node_steps
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        dkg_session_id:
+          type: string
+          format: uuid
+        wallet_index:
+          type: integer
+          minimum: 0
+        sender_address_base58:
+          type: string
+        recipient_address_base58:
+          type: string
+        amount_lamports:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/SigningStatus"
+        message_hash_hex:
+          type:
+            - string
+            - "null"
+        recent_blockhash:
+          type:
+            - string
+            - "null"
+        transaction_signature:
+          type:
+            - string
+            - "null"
+        explorer_url:
+          type:
+            - string
+            - "null"
+        error_message:
+          type:
+            - string
+            - "null"
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        node_steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/SigningNodeStep"
+      additionalProperties: false
+    SigningNodeStep:
+      type: object
+      required: [node_id, round, status]
+      properties:
+        node_id:
+          $ref: "#/components/schemas/NodeId"
+        round:
+          type: integer
+          enum: [1, 2]
+        status:
+          $ref: "#/components/schemas/StepStatus"
+      additionalProperties: false
+    TriggerSigningRoundResponse:
+      type: object
+      required:
+        - request_id
+        - node_id
+        - round
+        - status
+        - signing_status
+        - public_payload
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        node_id:
+          $ref: "#/components/schemas/NodeId"
+        round:
+          type: integer
+          enum: [1, 2]
+        status:
+          $ref: "#/components/schemas/StepStatus"
+        signing_status:
+          $ref: "#/components/schemas/SigningStatus"
+        public_payload:
+          oneOf:
+            - $ref: "#/components/schemas/PublicPayload"
+            - type: "null"
+      additionalProperties: false

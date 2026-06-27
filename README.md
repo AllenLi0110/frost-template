@@ -12,6 +12,7 @@ Minimal 2-of-2 FROST Ed25519 Solana Devnet wallet demo with step-by-step DKG, wa
 - [Folder Structure](#folder-structure)
 - [Getting Started](#getting-started)
 - [Manual Acceptance Checklist](#manual-acceptance-checklist)
+- [OpenAPI Spec](#openapi-spec)
 - [API Reference](#api-reference)
 - [AI Collaboration Evidence](#ai-collaboration-evidence)
 - [CI And Versioning](#ci-and-versioning)
@@ -362,6 +363,21 @@ curl -s http://localhost:8080/api/signing-requests
 ```
 
 The coordinator stores public protocol state only. Encrypted node-local material lives under `node_a` and `node_b` database schemas.
+
+## OpenAPI Spec
+
+The public Coordinator API is also documented as OpenAPI 3.1 in [docs/openapi.yaml](docs/openapi.yaml).
+
+Reviewers can import this file into Swagger Editor, Postman, or Insomnia. The repo also includes a local Swagger UI viewer at [docs/swagger-ui.html](docs/swagger-ui.html).
+
+To view the API documentation as a local website, run this from the repository root:
+
+```bash
+python3 -m http.server 18081
+open http://localhost:18081/docs/swagger-ui.html
+```
+
+The raw OpenAPI file is available at `http://localhost:18081/docs/openapi.yaml` while the static server is running. The default API server is `http://localhost:8080`, which matches the Docker Compose Coordinator service.
 
 ## API Reference
 
