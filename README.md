@@ -12,6 +12,7 @@ Minimal 2-of-2 FROST Ed25519 Solana Devnet wallet demo with step-by-step DKG, wa
 - [Folder Structure](#folder-structure)
 - [Getting Started](#getting-started)
 - [Manual Acceptance Checklist](#manual-acceptance-checklist)
+- [OpenAPI Spec](#openapi-spec)
 - [API Reference](#api-reference)
 - [AI Collaboration Evidence](#ai-collaboration-evidence)
 - [CI And Versioning](#ci-and-versioning)
@@ -362,6 +363,12 @@ curl -s http://localhost:8080/api/signing-requests
 ```
 
 The coordinator stores public protocol state only. Encrypted node-local material lives under `node_a` and `node_b` database schemas.
+
+## OpenAPI Spec
+
+The public Coordinator API is also documented as OpenAPI 3.1 in [docs/openapi.yaml](docs/openapi.yaml).
+
+Reviewers can import this file into Swagger Editor, Postman, or Insomnia. The default server is `http://localhost:8080`, which matches the Docker Compose Coordinator service.
 
 ## API Reference
 
