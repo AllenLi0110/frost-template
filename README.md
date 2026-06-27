@@ -368,7 +368,16 @@ The coordinator stores public protocol state only. Encrypted node-local material
 
 The public Coordinator API is also documented as OpenAPI 3.1 in [docs/openapi.yaml](docs/openapi.yaml).
 
-Reviewers can import this file into Swagger Editor, Postman, or Insomnia. The default server is `http://localhost:8080`, which matches the Docker Compose Coordinator service.
+Reviewers can import this file into Swagger Editor, Postman, or Insomnia. The repo also includes a local Swagger UI viewer at [docs/swagger-ui.html](docs/swagger-ui.html).
+
+To view the API documentation as a local website, run this from the repository root:
+
+```bash
+python3 -m http.server 18081
+open http://localhost:18081/docs/swagger-ui.html
+```
+
+The raw OpenAPI file is available at `http://localhost:18081/docs/openapi.yaml` while the static server is running. The default API server is `http://localhost:8080`, which matches the Docker Compose Coordinator service.
 
 ## API Reference
 
