@@ -365,6 +365,50 @@ export default function Home() {
     }
   }
 
+  async function refreshAllWalletBalances() {
+    setIsWalletLoading(true);
+
+    try {
+      const response = await fetch("/api/coordinator/api/wallets", {
+        cache: "no-store",
+      });
+      const payload = await readJson<WalletListResponse>(response);
+
+      if (payload.wallets.length === 0) {
+        setWallets([]);
+        return;
+      }
+
+      const refreshedWallets = await Promise.all(
+        payload.wallets.map(async (wallet) => {
+          try {
+            const balanceResponse = await fetch(
+              `/api/coordinator/api/wallets/${wallet.wallet_index}/balance`,
+              { cache: "no-store" },
+            );
+            const balance =
+              await readJson<WalletBalanceResponse>(balanceResponse);
+
+            return {
+              ...wallet,
+              balance_lamports: balance.balance_lamports,
+              balance_status: balance.balance_status,
+              balance_error_message: balance.balance_error_message,
+            };
+          } catch {
+            return wallet;
+          }
+        }),
+      );
+
+      setWallets(refreshedWallets);
+    } catch {
+      await loadWallets();
+    } finally {
+      setIsWalletLoading(false);
+    }
+  }
+
   async function loadSigningRequests() {
     setIsSigningLoading(true);
 

@@ -2,6 +2,12 @@
 
 All notable project changes are tracked here. Versions follow numeric SemVer patch increments.
 
+## [0.1.4] - 2026-06-27
+
+### Fixed
+
+- Refreshed each vault balance from Solana Devnet after transaction broadcast and confirmation updates.
+
 ## [0.1.3] - 2026-06-26
 
 ### Changed
