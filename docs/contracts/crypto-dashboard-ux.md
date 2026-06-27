@@ -64,6 +64,8 @@ Use a restrained crypto exchange operations style inspired by modern exchange on
 - Clear network, threshold, and security badges.
 - Status colors for confirmed, pending, failed, and idle states.
 - A persistent vault watch surface should show derived vault addresses, balance status, and SOL balances during signing and broadcast scenes.
+- The Vault Watch refresh control must refresh every visible vault through the balance lookup API, not only reload cached wallet rows.
+- Broadcast and confirmation refresh actions must refresh Vault Watch balances after the signing request updates so sender and recipient funds reflect the latest Solana Devnet state.
 - No landing-page hero, no decorative gradients, and no decorative orbs.
 - No card nesting beyond actual repeated items and tool panels.
 - Do not copy an exchange brand, logo, proprietary layout, or exact wording.

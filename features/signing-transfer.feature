@@ -60,5 +60,7 @@ Feature: Step-by-step FROST signing and Solana transfer
     When I aggregate and broadcast the signing request
     Then the signing request status should become "BROADCASTED"
     And the frontend should display a Solana Explorer transaction link
+    And Vault Watch should refresh the latest wallet balances
     When Solana reports the transaction as confirmed
     Then the signing request status should become "CONFIRMED"
+    And Vault Watch should refresh the latest wallet balances again

@@ -59,6 +59,17 @@ type WalletBalanceResponse = {
   balance_error_message: string | null;
 };
 
+type RefreshVaultBalanceOptions = {
+  announce?: boolean;
+};
+
+type VaultBalanceRefreshResult = {
+  didRefresh: boolean;
+  failed: boolean;
+  refreshedCount: number;
+  unavailableCount: number;
+};
+
 type SigningStep = {
   node_id: NodeId;
   round: SigningRound;
@@ -317,7 +328,14 @@ export default function Home() {
         return;
       }
 
-      setSession(await readJson<DkgSession>(response));
+      const nextSession = await readJson<DkgSession>(response);
+
+      setSession(nextSession);
+      setLastAction({
+        label: "Ceremony loaded",
+        status: "ok",
+        message: `Session ${shortId(nextSession.session_id)} is ${nextSession.status}.`,
+      });
     } catch (error) {
       setLastAction({
         label: "Load failed",
@@ -333,12 +351,9 @@ export default function Home() {
     setIsWalletLoading(true);
 
     try {
-      const response = await fetch("/api/coordinator/api/wallets", {
-        cache: "no-store",
-      });
-      const payload = await readJson<WalletListResponse>(response);
+      const nextWallets = await fetchWallets();
 
-      setWallets(payload.wallets);
+      setWallets(nextWallets);
     } catch (error) {
       setLastAction({
         label: "Vault load failed",
@@ -472,6 +487,79 @@ export default function Home() {
       });
     } finally {
       setPendingWalletAction(null);
+    }
+  }
+
+  async function refreshAllVaultBalances({
+    announce = true,
+  }: RefreshVaultBalanceOptions = {}): Promise<VaultBalanceRefreshResult> {
+    setIsWalletLoading(true);
+    setPendingWalletAction("balance-all");
+
+    try {
+      const currentWallets = await fetchWallets();
+
+      if (currentWallets.length === 0) {
+        setWallets([]);
+
+        if (announce) {
+          setLastAction({
+            label: "No vaults",
+            status: "idle",
+            message: "Create a derived vault before refreshing balances.",
+          });
+        }
+
+        return emptyVaultBalanceRefreshResult();
+      }
+
+      const refreshedWallets = await Promise.all(
+        currentWallets.map(refreshWalletBalanceSnapshot),
+      );
+
+      setWallets(refreshedWallets);
+
+      const unavailableCount = refreshedWallets.filter(
+        (wallet) => wallet.balance_status === "UNAVAILABLE",
+      ).length;
+
+      if (announce) {
+        setLastAction({
+          label: "Vault balances refreshed",
+          status: unavailableCount === 0 ? "ok" : "error",
+          message:
+            unavailableCount === 0
+              ? `Updated ${refreshedWallets.length} vault balance${
+                  refreshedWallets.length === 1 ? "" : "s"
+                } from Solana Devnet.`
+              : `${unavailableCount} vault balance${
+                  unavailableCount === 1 ? "" : "s"
+                } could not be refreshed.`,
+        });
+      }
+
+      return {
+        didRefresh: true,
+        failed: false,
+        refreshedCount: refreshedWallets.length,
+        unavailableCount,
+      };
+    } catch (error) {
+      setLastAction({
+        label: "Vault refresh failed",
+        status: "error",
+        message: errorMessage(error),
+      });
+
+      return {
+        didRefresh: false,
+        failed: true,
+        refreshedCount: 0,
+        unavailableCount: 0,
+      };
+    } finally {
+      setPendingWalletAction(null);
+      setIsWalletLoading(false);
     }
   }
 
@@ -717,13 +805,17 @@ export default function Home() {
       const request = await readJson<SigningRequest>(response);
 
       await loadSigningRequests();
-      await loadWallets();
+      const balanceRefresh = await refreshAllVaultBalances({ announce: false });
       setSelectedSigningRequestId(request.request_id);
       setLastAction({
         label: "Broadcast submitted",
         status: "ok",
         message: request.transaction_signature
-          ? `Transaction ${shortId(request.transaction_signature)} is ${request.status}.`
+          ? `Transaction ${shortId(
+              request.transaction_signature,
+            )} is ${request.status}; ${balanceRefreshMessage(
+              balanceRefresh,
+            )}.`
           : `Ticket ${shortId(request.request_id)} is ${request.status}.`,
       });
     } catch (error) {
@@ -752,16 +844,21 @@ export default function Home() {
         { method: "POST" },
       );
       const request = await readJson<SigningRequest>(response);
+      let balanceRefresh: VaultBalanceRefreshResult | null = null;
 
       await loadSigningRequests();
       if (request.status !== "FAILED") {
-        await loadWallets();
+        balanceRefresh = await refreshAllVaultBalances({ announce: false });
       }
       setSelectedSigningRequestId(request.request_id);
       setLastAction({
         label: "Confirmation refreshed",
         status: request.status === "FAILED" ? "error" : "ok",
-        message: request.error_message ?? `Ticket is ${request.status}.`,
+        message:
+          request.error_message ??
+          `Ticket is ${request.status}${
+            balanceRefresh ? `; ${balanceRefreshMessage(balanceRefresh)}` : ""
+          }.`,
       });
     } catch (error) {
       await loadSigningRequests();
@@ -1385,8 +1482,8 @@ export default function Home() {
               </div>
               <button
                 className="secondary-button vault-watch-refresh"
-                disabled={isWalletLoading}
-                onClick={() => void loadWallets()}
+                disabled={isWalletLoading || pendingWalletAction !== null}
+                onClick={() => void refreshAllVaultBalances()}
                 type="button"
               >
                 {isWalletLoading ? "Refreshing..." : "Refresh"}
@@ -1496,6 +1593,30 @@ async function readJson<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
+async function fetchWallets(): Promise<Wallet[]> {
+  const response = await fetch("/api/coordinator/api/wallets", {
+    cache: "no-store",
+  });
+  const payload = await readJson<WalletListResponse>(response);
+
+  return payload.wallets;
+}
+
+async function refreshWalletBalanceSnapshot(wallet: Wallet): Promise<Wallet> {
+  const response = await fetch(
+    `/api/coordinator/api/wallets/${wallet.wallet_index}/balance`,
+    { cache: "no-store" },
+  );
+  const balance = await readJson<WalletBalanceResponse>(response);
+
+  return {
+    ...wallet,
+    balance_lamports: balance.balance_lamports,
+    balance_status: balance.balance_status,
+    balance_error_message: balance.balance_error_message,
+  };
+}
+
 function hasErrorMessage(payload: unknown): payload is { error: string } {
   return (
     typeof payload === "object" &&
@@ -1507,6 +1628,35 @@ function hasErrorMessage(payload: unknown): payload is { error: string } {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function emptyVaultBalanceRefreshResult(): VaultBalanceRefreshResult {
+  return {
+    didRefresh: false,
+    failed: false,
+    refreshedCount: 0,
+    unavailableCount: 0,
+  };
+}
+
+function balanceRefreshMessage(result: VaultBalanceRefreshResult): string {
+  if (result.failed) {
+    return "vault balance refresh failed";
+  }
+
+  if (!result.didRefresh) {
+    return "no vault balances to refresh";
+  }
+
+  if (result.unavailableCount > 0) {
+    return `${result.unavailableCount} vault balance${
+      result.unavailableCount === 1 ? "" : "s"
+    } unavailable`;
+  }
+
+  return `${result.refreshedCount} vault balance${
+    result.refreshedCount === 1 ? "" : "s"
+  } refreshed`;
 }
 
 async function writeClipboardText(value: string) {
